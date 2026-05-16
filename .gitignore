@@ -1,0 +1,11 @@
+# Cache e builds
+.db_cache.pkl
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.spec
+
+# Arquivos gerados
+Toque-de-Cor-Mac.zip
