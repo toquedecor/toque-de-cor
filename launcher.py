@@ -47,7 +47,7 @@ def _init_user_files():
 
 
 def _open_browser():
-    time.sleep(5)
+    time.sleep(8)
     webbrowser.open("http://localhost:8502")
 
 
@@ -63,9 +63,9 @@ if __name__ == "__main__":
 
     bootstrap.run(
         str(bundle_path("app.py")),
-        command_line=None,
-        args=[],
-        flag_options={
+        False,   # is_hello (Streamlit >= 1.35)
+        [],      # args
+        {
             "server.port":              8502,
             "server.headless":          True,
             "browser.gatherUsageStats": False,
