@@ -14,6 +14,7 @@ import os
 import math
 from pathlib import Path
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -109,6 +110,24 @@ def _fetch_existing(sb, uf: str) -> dict:
     return {r["cod_sku"]: r for r in rows}
 
 
+def _fetch_existing_new_client(uf: str) -> tuple:
+    """Thread-safe: cria novo cliente Supabase para uso em thread-pool."""
+    sb = _get_sb()
+    return uf, _fetch_existing(sb, uf)
+
+
+def _fetch_all_parallel() -> dict:
+    """Busca dados existentes de TODAS as UFs em paralelo — 5x mais rápido."""
+    result = {uf: {} for uf in STATES}
+    with ThreadPoolExecutor(max_workers=len(STATES)) as executor:
+        futures = {executor.submit(_fetch_existing_new_client, uf): uf for uf in STATES}
+        for future in as_completed(futures):
+            uf, existing = future.result()
+            result[uf] = existing
+            print(f"    [{uf}] {len(existing)} registros existentes")
+    return result
+
+
 def _row_changed(old: dict, new: dict) -> bool:
     """Retorna True se algum campo relevante mudou."""
     for col in _COMPARE_COLS:
@@ -124,18 +143,15 @@ def _row_changed(old: dict, new: dict) -> bool:
     return False
 
 
-def _upload_uf(sb, uf: str, df: pd.DataFrame) -> dict:
+def _upload_uf(sb, uf: str, df: pd.DataFrame, existing: dict) -> dict:
     """
     Faz diff inteligente:
       - Upsert nas linhas novas ou alteradas
       - Delete nas linhas que sumiram do Excel
+    Recebe `existing` pré-buscado (via _fetch_all_parallel).
     Retorna dict com estatísticas do diff.
     """
     agora = datetime.now(timezone.utc).isoformat()
-
-    # 1. Dados existentes no Supabase
-    print(f"    [{uf}] Verificando registros existentes...", end="\r")
-    existing = _fetch_existing(sb, uf)
     existing_skus = set(existing.keys())
 
     # 2. Monta novos dados
@@ -265,18 +281,22 @@ def importar(excel_path: str) -> dict:
     print(f"\n2. Enriquecendo com dados CITEL ({len(all_skus)} SKUs únicos)...")
     db_df = _buscar_citel(list(all_skus))
 
-    # 3. Enriquece cada UF e faz upload com diff
-    print("\n3. Comparando e enviando para Supabase...")
+    # 3. Busca dados existentes no Supabase em paralelo (5× mais rápido)
+    print("\n3. Buscando dados atuais no Supabase (paralelo)...")
+    existing_all = _fetch_all_parallel()
+
+    # 4. Calcula diff e envia para Supabase
+    print("\n4. Comparando e enviando para Supabase...")
     resultado: dict[str, dict] = {}
     totais = {"inseridos": 0, "atualizados": 0, "removidos": 0, "sem_alteracao": 0, "total": 0}
     for uf in STATES:
         df_rich = _enriquecer(dfs[uf], db_df)
-        stats = _upload_uf(sb, uf, df_rich)
+        stats = _upload_uf(sb, uf, df_rich, existing_all[uf])
         resultado[uf] = stats
         for k in totais:
             totais[k] += stats.get(k, 0)
 
-    # 4. Atualiza registro de importação
+    # 5. Atualiza registro de importação
     from db_supabase import set_config
     agora_fmt = datetime.now().strftime("%d/%m/%Y %H:%M")
     set_config("ultima_importacao", agora_fmt)

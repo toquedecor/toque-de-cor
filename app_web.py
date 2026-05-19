@@ -243,10 +243,20 @@ def check_db() -> tuple:
 
 def _clear_all_caches():
     clear_disk_cache()
+    # Nuclear clear — apaga TODOS os caches do Streamlit de uma vez
+    try:
+        st.cache_data.clear()
+        st.cache_resource.clear()
+    except Exception:
+        pass
+    # Fallback individual (garantia extra)
     for fn in (get_db_data, get_enriched, get_product_opcoes,
                get_states_indexed, get_db_lookup, read_uf, read_all_states,
                get_catalogo_uf, catalogo_disponivel):
-        fn.clear()
+        try:
+            fn.clear()
+        except Exception:
+            pass
 
 
 
