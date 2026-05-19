@@ -320,22 +320,29 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                         f"Removidos: -{_rs.get('removidos', 0)}",
                         ln=True, align="C")
                     _pdf.ln(4)
+                    def _safe_pdf(text: str) -> str:
+                        """Converte texto para Latin-1 seguro para fontes core do fpdf2."""
+                        subs = {"—": "-", "–": "-", "\u2018": "'", "\u2019": "'",
+                                "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u00b7": "."}
+                        for k, v in subs.items():
+                            text = text.replace(k, v)
+                        return text.encode("latin-1", errors="replace").decode("latin-1")
                     def _ptab(rows, title):
                         if not rows:
                             return
                         _pdf.set_font("Helvetica", "B", 10)
-                        _pdf.cell(0, 7, title, ln=True)
+                        _pdf.cell(0, 7, _safe_pdf(title), ln=True)
                         _cols = list(rows[0].keys())
                         _cw = _PW / len(_cols)
                         _pdf.set_fill_color(210, 210, 210)
                         _pdf.set_font("Helvetica", "B", 7)
                         for _c in _cols:
-                            _pdf.cell(_cw, 6, str(_c)[:20], border=1, fill=True)
+                            _pdf.cell(_cw, 6, _safe_pdf(str(_c)[:20]), border=1, fill=True)
                         _pdf.ln()
                         _pdf.set_font("Helvetica", "", 7)
                         for _r in rows:
                             for _c in _cols:
-                                _v = str(_r.get(_c, ""))
+                                _v = _safe_pdf(str(_r.get(_c, "")))
                                 while _v and _pdf.get_string_width(_v) > _cw - 1.5:
                                     _v = _v[:-1]
                                 _pdf.cell(_cw, 5, _v, border=1)
