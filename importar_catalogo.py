@@ -13,7 +13,7 @@ import sys
 import os
 import math
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -298,7 +298,8 @@ def importar(excel_path: str) -> dict:
 
     # 5. Atualiza registro de importação
     from db_supabase import set_config
-    agora_fmt = datetime.now().strftime("%d/%m/%Y %H:%M")
+    _BR_TZ = timezone(timedelta(hours=-3))
+    agora_fmt = datetime.now(_BR_TZ).strftime("%d/%m/%Y %H:%M")
     set_config("ultima_importacao", agora_fmt)
     set_config("excel_nome", Path(excel_path).name)
     set_config("catalogo_no_supabase", "true")
