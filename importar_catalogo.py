@@ -184,12 +184,48 @@ def _upload_uf(sb, uf: str, df: pd.DataFrame) -> dict:
         for i in range(0, len(dl), 100):
             sb.table("catalogo").delete().eq("uf", uf).in_("cod_sku", dl[i:i+100]).execute()
 
+    # 6. Coletar alterações de preço
+    precos_alterados = []
+    for sku in to_update:
+        old_preco = float(existing[sku].get("preco") or 0)
+        new_preco = float(new_data[sku]["preco"])
+        if abs(old_preco - new_preco) > 0.0001:
+            precos_alterados.append({
+                "UF": uf,
+                "SKU": sku,
+                "COD CITEL": new_data[sku]["cod_citel"],
+                "Descrição": new_data[sku]["desc_final"],
+                "Embalagem": new_data[sku]["embalagem"],
+                "Cor": new_data[sku]["cor"],
+                "Preço Anterior": round(old_preco, 2),
+                "Preço Atual": round(new_preco, 2),
+            })
+
+    # 7. Coletar novos vínculos CITEL (itens que agora têm cod_citel e antes não tinham)
+    novos_citel = []
+    for sku in to_insert | to_update:
+        new_citel = new_data[sku]["cod_citel"]
+        if new_citel and new_citel.strip():
+            old_citel = existing.get(sku, {}).get("cod_citel", "")
+            if not old_citel or not str(old_citel).strip():
+                novos_citel.append({
+                    "UF": uf,
+                    "SKU": sku,
+                    "COD CITEL": new_citel,
+                    "Descrição": new_data[sku]["desc_final"],
+                    "Embalagem": new_data[sku]["embalagem"],
+                    "Cor": new_data[sku]["cor"],
+                    "Preço": round(float(new_data[sku]["preco"]), 2),
+                })
+
     stats = {
-        "inseridos":    len(to_insert),
-        "atualizados":  len(to_update),
-        "removidos":    len(to_delete),
-        "sem_alteracao": unchanged,
-        "total":        len(new_skus),
+        "inseridos":       len(to_insert),
+        "atualizados":     len(to_update),
+        "removidos":       len(to_delete),
+        "sem_alteracao":   unchanged,
+        "total":           len(new_skus),
+        "precos_alterados": precos_alterados,
+        "novos_citel":     novos_citel,
     }
     print(
         f"    [{uf}] ✅ "

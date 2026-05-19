@@ -244,7 +244,8 @@ def check_db() -> tuple:
 def _clear_all_caches():
     clear_disk_cache()
     for fn in (get_db_data, get_enriched, get_product_opcoes,
-               get_states_indexed, get_db_lookup, read_uf, read_all_states):
+               get_states_indexed, get_db_lookup, read_uf, read_all_states,
+               get_catalogo_uf, catalogo_disponivel):
         fn.clear()
 
 

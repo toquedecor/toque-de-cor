@@ -262,8 +262,23 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
 
         _PEND_BYTES = "import_pending_bytes"
         _PEND_NAME  = "import_pending_name"
+        _REPORT_KEY = "import_report"
 
         if not st.session_state.get(_PEND_BYTES):
+            # ── Relatório da última importação ─────────────────────────────
+            if st.session_state.get(_REPORT_KEY):
+                _rpt = st.session_state[_REPORT_KEY]
+                st.markdown(f"### 📊 Relatório da última importação — {_rpt['data']}")
+                if _rpt["precos"]:
+                    st.markdown(f"#### 💰 Alterações de Preço — {len(_rpt['precos'])} itens")
+                    st.dataframe(pd.DataFrame(_rpt["precos"]), hide_index=True, use_container_width=True)
+                if _rpt["citel"]:
+                    st.markdown(f"#### 🔗 Novos Vínculos CITEL — {len(_rpt['citel'])} itens")
+                    st.dataframe(pd.DataFrame(_rpt["citel"]), hide_index=True, use_container_width=True)
+                if st.button("✅ Fechar relatório"):
+                    st.session_state.pop(_REPORT_KEY, None)
+                    st.rerun()
+                st.divider()
             # ── FASE 1: Seleção e validação do arquivo ──────────────────────
             uploaded = st.file_uploader("Selecionar arquivo Excel (.xlsx)", type=["xlsx"])
             if uploaded:
@@ -343,10 +358,22 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                                 f"🟢 +{ins} novos  🔄 {upd} atualizados  "
                                 f"🔴 -{rem} removidos  ⚪ {same} sem alteração"
                             )
+                            # Coleta relatório de diff para exibir após o rerun
+                            _rpt_precos = [r for v in resultado.values() for r in v.get("precos_alterados", [])]
+                            _rpt_citel  = [r for v in resultado.values() for r in v.get("novos_citel", [])]
+                            if _rpt_precos or _rpt_citel:
+                                st.session_state[_REPORT_KEY] = {
+                                    "precos": _rpt_precos,
+                                    "citel":  _rpt_citel,
+                                    "data":   datetime.now().strftime("%d/%m/%Y %H:%M"),
+                                }
+                            else:
+                                st.session_state.pop(_REPORT_KEY, None)
                         except Exception:
                             _exc_text = _tb.format_exc()
                             st.warning("⚠️ Falha ao sincronizar catálogo com o Supabase — app usará Excel local normalmente.")
-                            st.code(_exc_text)
+                            with st.expander("🔍 Ver detalhe do erro"):
+                                st.code(_exc_text)
 
                     # Registra data/nome da importação
                     _agora = datetime.now().strftime("%d/%m/%Y %H:%M")
