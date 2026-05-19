@@ -338,9 +338,9 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                                 f"🔴 -{rem} removidos  ⚪ {same} sem alteração"
                             )
                         except Exception:
+                            _exc_text = _tb.format_exc()
                             st.warning("⚠️ Falha ao sincronizar catálogo com o Supabase — app usará Excel local normalmente.")
-                            with st.expander("🔍 Ver detalhe do erro"):
-                                st.code(_tb.format_exc())
+                            st.code(_exc_text)
 
                     # Registra data/nome da importação
                     _agora = datetime.now().strftime("%d/%m/%Y %H:%M")
