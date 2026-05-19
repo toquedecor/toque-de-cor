@@ -1,1 +1,60 @@
-[]
+[
+  {
+    "numero": 1,
+    "uf": "BA",
+    "data": "17/05/2026 10:53",
+    "desconto_pct": 10.0,
+    "total_geral": 1689.4,
+    "itens": [
+      {
+        "cod_citel": "03391",
+        "descricao": "GLA MUDA FAC FO CAMURCA 3,6L IP31 — CAMURÇA",
+        "embalagem": "3,6 lts. Galão",
+        "qtd": 5,
+        "preco_unit": 38.86,
+        "total": 194.3
+      },
+      {
+        "cod_citel": "03286",
+        "descricao": "GLA MUDA FAC FO TREV SORT 18L IP33 — TREVO DA SORTE",
+        "embalagem": "18 lts. Lata",
+        "qtd": 10,
+        "preco_unit": 149.51,
+        "total": 1495.1
+      }
+    ]
+  },
+  {
+    "numero": 2,
+    "uf": "BA",
+    "data": "17/05/2026 10:55",
+    "desconto_pct": 10.0,
+    "total_geral": 1903.19,
+    "itens": [
+      {
+        "cod_citel": "03391",
+        "descricao": "GLA MUDA FAC FO CAMURCA 3,6L IP31 — CAMURÇA",
+        "embalagem": "3,6 lts. Galão",
+        "qtd": 5,
+        "preco_unit": 38.86,
+        "total": 194.3
+      },
+      {
+        "cod_citel": "03286",
+        "descricao": "GLA MUDA FAC FO TREV SORT 18L IP33 — TREVO DA SORTE",
+        "embalagem": "18 lts. Lata",
+        "qtd": 10,
+        "preco_unit": 149.51,
+        "total": 1495.1
+      },
+      {
+        "cod_citel": "03354",
+        "descricao": "GLA MAX EF FO CEU CLARO 18L IP33 — CEU CLARO",
+        "embalagem": "18 lts. Lata",
+        "qtd": 1,
+        "preco_unit": 213.79,
+        "total": 213.79
+      }
+    ]
+  }
+]

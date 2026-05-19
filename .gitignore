@@ -1,3 +1,7 @@
+# Segredos — NUNCA commitar
+.env
+.streamlit/secrets.toml
+
 # Cache e builds
 .db_cache.pkl
 __pycache__/
@@ -9,3 +13,8 @@ build/
 
 # Arquivos gerados
 Toque-de-Cor-Mac.zip
+Toque-de-Cor-Mac/
+
+# Excel grande (não sobe no git)
+Tabela SW Suvinil Geral.xlsx
+"Simulador Pedido Toque de Cor Juazeiro (002).xlsm"

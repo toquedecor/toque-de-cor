@@ -1,0 +1,428 @@
+"""
+Módulo Supabase — Toque de Cor Web
+
+Responsabilidades:
+  - Conexão com o Supabase (PostgreSQL gratuito)
+  - Inicialização das tabelas necessárias via SQL
+  - Funções de pedidos: salvar, listar, atualizar status
+  - Configurações do sistema (e-mail, última importação)
+
+Variáveis de ambiente necessárias (.env):
+  SUPABASE_URL  = https://xxxx.supabase.co
+  SUPABASE_KEY  = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+"""
+
+import os
+import streamlit as st
+
+# ── SQL de inicialização das tabelas ─────────────────────────────────────────
+_SQL_INIT = """
+-- Usuários do sistema
+CREATE TABLE IF NOT EXISTS usuarios (
+    id        SERIAL PRIMARY KEY,
+    usuario   TEXT UNIQUE NOT NULL,
+    nome      TEXT NOT NULL,
+    senha     TEXT NOT NULL,
+    perfil    TEXT NOT NULL DEFAULT 'vendedor',
+    loja      TEXT NOT NULL DEFAULT '',
+    ativo     BOOLEAN NOT NULL DEFAULT TRUE,
+    criado_em TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Pedidos
+CREATE TABLE IF NOT EXISTS pedidos (
+    id          SERIAL PRIMARY KEY,
+    numero      INTEGER NOT NULL,
+    usuario     TEXT NOT NULL,
+    loja        TEXT NOT NULL DEFAULT '',
+    uf          TEXT NOT NULL,
+    desconto_pct NUMERIC(6,2) DEFAULT 0,
+    total_geral  NUMERIC(12,2) DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'pendente',
+    criado_em   TIMESTAMPTZ DEFAULT NOW(),
+    enviado_em  TIMESTAMPTZ
+);
+
+-- Itens dos pedidos
+CREATE TABLE IF NOT EXISTS pedido_itens (
+    id          SERIAL PRIMARY KEY,
+    pedido_id   INTEGER REFERENCES pedidos(id) ON DELETE CASCADE,
+    cod_sku     TEXT,
+    cod_citel   TEXT,
+    marca       TEXT,
+    descricao   TEXT,
+    embalagem   TEXT,
+    qtd         INTEGER NOT NULL DEFAULT 0,
+    preco_unit  NUMERIC(12,2) DEFAULT 0,
+    total       NUMERIC(12,2) DEFAULT 0
+);
+
+-- Configurações do sistema
+CREATE TABLE IF NOT EXISTS configuracoes (
+    chave TEXT PRIMARY KEY,
+    valor TEXT
+);
+
+-- Log de auditoria
+CREATE TABLE IF NOT EXISTS auditoria (
+    id        SERIAL PRIMARY KEY,
+    usuario   TEXT,
+    acao      TEXT,
+    detalhe   TEXT,
+    criado_em TIMESTAMPTZ DEFAULT NOW()
+);
+"""
+
+
+# ── Cliente Supabase (singleton via cache_resource) ──────────────────────────
+@st.cache_resource(show_spinner=False)
+def get_supabase():
+    """
+    Retorna cliente Supabase autenticado.
+    Cached permanentemente — reconecta apenas em restart do servidor.
+    """
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def supabase_ok() -> bool:
+    """Verifica se o Supabase está configurado e acessível."""
+    sb = get_supabase()
+    if not sb:
+        return False
+    try:
+        sb.table("configuracoes").select("chave").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
+# ── Configurações do sistema ─────────────────────────────────────────────────
+def get_all_configs() -> dict:
+    """Busca todas as configurações do sistema em uma única requisição."""
+    sb = get_supabase()
+    if not sb:
+        return {}
+    try:
+        r = sb.table("configuracoes").select("chave,valor").execute()
+        return {row["chave"]: row["valor"] for row in (r.data or [])}
+    except Exception:
+        return {}
+
+
+def get_config(chave: str, padrao: str = "") -> str:
+    sb = get_supabase()
+    if not sb:
+        return padrao
+    try:
+        r = sb.table("configuracoes").select("valor").eq("chave", chave).single().execute()
+        return r.data.get("valor", padrao) if r.data else padrao
+    except Exception:
+        return padrao
+
+
+def set_config(chave: str, valor: str) -> bool:
+    sb = get_supabase()
+    if not sb:
+        return False
+    try:
+        sb.table("configuracoes").upsert({"chave": chave, "valor": valor}).execute()
+        return True
+    except Exception:
+        return False
+
+
+def get_permissoes_perfil(perfil: str) -> set:
+    """Retorna o conjunto de permissões de um perfil salvo no Supabase.
+    Retorna set vazio se não houver configuração (auth.py usa fallback padrão)."""
+    import json
+    val = get_config(f"permissoes_{perfil}", "")
+    if val:
+        try:
+            return set(json.loads(val))
+        except Exception:
+            return set()
+    return set()
+
+
+def set_permissoes_perfil(perfil: str, permissoes: set) -> bool:
+    """Salva as permissões de um perfil no Supabase."""
+    import json
+    return set_config(f"permissoes_{perfil}", json.dumps(sorted(permissoes)))
+
+
+# ── Pedidos ──────────────────────────────────────────────────────────────────
+def proximo_numero_pedido() -> int:
+    """Retorna o próximo número sequencial de pedido."""
+    sb = get_supabase()
+    if not sb:
+        return 1
+    try:
+        r = sb.table("pedidos").select("numero").order("numero", desc=True).limit(1).execute()
+        if r.data:
+            return r.data[0]["numero"] + 1
+        return 1
+    except Exception:
+        return 1
+
+
+def salvar_pedido(pedido: dict, itens: list[dict]) -> tuple[bool, str, int]:
+    """
+    Persiste um pedido e seus itens no Supabase.
+    Retorna (sucesso, mensagem, id_pedido).
+    """
+    sb = get_supabase()
+    if not sb:
+        return False, "Banco de dados indisponível.", -1
+    try:
+        numero = proximo_numero_pedido()
+        r = sb.table("pedidos").insert({
+            "numero":      numero,
+            "usuario":     pedido.get("usuario", ""),
+            "loja":        pedido.get("loja", ""),
+            "uf":          pedido.get("uf", ""),
+            "desconto_pct": pedido.get("desconto_pct", 0),
+            "total_geral":  pedido.get("total_geral", 0),
+            "status":      "pendente",
+        }).execute()
+        pedido_id = r.data[0]["id"]
+
+        linhas = [
+            {
+                "pedido_id":  pedido_id,
+                "cod_sku":    it.get("cod_sku", ""),
+                "cod_citel":  it.get("cod_citel", ""),
+                "marca":      it.get("marca", ""),
+                "descricao":  it.get("descricao", ""),
+                "embalagem":  it.get("embalagem", ""),
+                "qtd":        int(it.get("qtd", 0)),
+                "preco_unit": float(it.get("preco_unit", 0)),
+                "total":      float(it.get("total", 0)),
+            }
+            for it in itens
+        ]
+        sb.table("pedido_itens").insert(linhas).execute()
+        registrar_auditoria(pedido.get("usuario", ""), "PEDIDO_CRIADO", f"Pedido #{numero}")
+        return True, f"Pedido #{numero:04d} salvo.", pedido_id
+    except Exception as e:
+        return False, str(e), -1
+
+
+def listar_pedidos(usuario: str = "", loja: str = "", perfil: str = "") -> list[dict]:
+    """
+    Lista pedidos. Admin/Supervisor veem todos; Vendedor vê apenas os próprios.
+    """
+    sb = get_supabase()
+    if not sb:
+        return []
+    try:
+        q = sb.table("pedidos").select(
+            "id, numero, usuario, loja, uf, desconto_pct, total_geral, status, criado_em, enviado_em"
+        ).order("numero", desc=True)
+
+        if perfil == "vendedor" and usuario:
+            q = q.eq("usuario", usuario)
+        elif loja and perfil == "supervisor":
+            q = q.eq("loja", loja)
+
+        r = q.execute()
+        return r.data or []
+    except Exception:
+        return []
+
+
+def buscar_pedido_completo(pedido_id: int) -> dict | None:
+    """Busca pedido + itens pelo id."""
+    sb = get_supabase()
+    if not sb:
+        return None
+    try:
+        rp = sb.table("pedidos").select("*").eq("id", pedido_id).single().execute()
+        ri = sb.table("pedido_itens").select("*").eq("pedido_id", pedido_id).execute()
+        if rp.data:
+            return {**rp.data, "itens": ri.data or []}
+        return None
+    except Exception:
+        return None
+
+
+def atualizar_status_pedido(pedido_id: int, status: str, usuario: str = "") -> bool:
+    """Atualiza o status de um pedido (pendente → enviado → aprovado)."""
+    sb = get_supabase()
+    if not sb:
+        return False
+    try:
+        upd: dict = {"status": status}
+        if status == "enviado":
+            from datetime import datetime
+            upd["enviado_em"] = datetime.utcnow().isoformat()
+        sb.table("pedidos").update(upd).eq("id", pedido_id).execute()
+        registrar_auditoria(usuario, f"STATUS_{status.upper()}", f"Pedido id={pedido_id}")
+        return True
+    except Exception:
+        return False
+
+
+def excluir_pedido(pedido_id: int, usuario: str = "") -> bool:
+    sb = get_supabase()
+    if not sb:
+        return False
+    try:
+        sb.table("pedidos").delete().eq("id", pedido_id).execute()
+        registrar_auditoria(usuario, "PEDIDO_EXCLUIDO", f"Pedido id={pedido_id}")
+        return True
+    except Exception:
+        return False
+
+
+def atualizar_pedido(
+    pedido_id: int,
+    uf: str,
+    desconto_pct: float,
+    total_geral: float,
+    itens: list[dict],
+    usuario: str = "",
+) -> tuple[bool, str]:
+    """Atualiza UF, desconto, total e itens de um pedido existente."""
+    sb = get_supabase()
+    if not sb:
+        return False, "Banco de dados indisponível."
+    try:
+        sb.table("pedidos").update({
+            "uf":          uf,
+            "desconto_pct": round(float(desconto_pct), 4),
+            "total_geral":  round(float(total_geral), 2),
+        }).eq("id", pedido_id).execute()
+
+        # Reinsere os itens do pedido
+        sb.table("pedido_itens").delete().eq("pedido_id", pedido_id).execute()
+        linhas = [
+            {
+                "pedido_id":  pedido_id,
+                "cod_sku":    it.get("cod_sku", ""),
+                "cod_citel":  it.get("cod_citel", ""),
+                "marca":      it.get("marca", ""),
+                "descricao":  it.get("descricao", ""),
+                "embalagem":  it.get("embalagem", ""),
+                "qtd":        int(it.get("qtd", 0)),
+                "preco_unit": float(it.get("preco_unit", 0)),
+                "total":      float(it.get("total", 0)),
+            }
+            for it in itens if int(it.get("qtd", 0)) > 0
+        ]
+        if linhas:
+            sb.table("pedido_itens").insert(linhas).execute()
+        registrar_auditoria(usuario, "PEDIDO_EDITADO", f"Pedido id={pedido_id}")
+        return True, "Pedido atualizado com sucesso."
+    except Exception as e:
+        return False, str(e)
+
+
+# ── Auditoria ────────────────────────────────────────────────────────────────
+def registrar_auditoria(usuario: str, acao: str, detalhe: str = "") -> None:
+    sb = get_supabase()
+    if not sb:
+        return
+    try:
+        sb.table("auditoria").insert({
+            "usuario": usuario,
+            "acao":    acao,
+            "detalhe": detalhe,
+        }).execute()
+    except Exception:
+        pass
+
+
+def listar_auditoria(limit: int = 100) -> list[dict]:
+    sb = get_supabase()
+    if not sb:
+        return []
+    try:
+        r = (
+            sb.table("auditoria")
+            .select("*")
+            .order("criado_em", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return r.data or []
+    except Exception:
+        return []
+
+
+# ── Catálogo de produtos ──────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def catalogo_disponivel() -> bool:
+    """
+    Verifica se o catálogo já foi importado para o Supabase.
+    Resultado em cache por 1h — evita chamadas HTTP repetidas a cada acesso.
+    """
+    return get_config("catalogo_no_supabase", "") == "true"
+
+
+@st.cache_resource
+def get_catalogo_uf(uf: str) -> "pd.DataFrame":
+    """
+    Retorna todos os produtos de uma UF a partir do Supabase.
+    Resultado mantido em memória (@cache_resource) — zero latência após 1ª carga.
+    Faz paginação automática para contornar o limite de 1000 rows do PostgREST.
+    """
+    import pandas as pd
+    sb = get_supabase()
+    if not sb:
+        return pd.DataFrame()
+
+    PAGE = 1000
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        try:
+            r = (
+                sb.table("catalogo")
+                .select("linha,cod_sku,descricao,embalagem,cor,preco,cod_citel,descricao_db,marca,grupo,desc_final")
+                .eq("uf", uf)
+                .order("linha")
+                .range(offset, offset + PAGE - 1)
+                .execute()
+            )
+            batch = r.data or []
+            rows.extend(batch)
+            if len(batch) < PAGE:
+                break
+            offset += PAGE
+        except Exception:
+            break
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df.rename(columns={
+        "linha":        "LINHA",
+        "cod_sku":      "COD_SKU",
+        "descricao":    "DESCRICAO",
+        "embalagem":    "EMBALAGEM",
+        "cor":          "COR",
+        "preco":        "PRECO",
+        "cod_citel":    "COD_CITEL",
+        "descricao_db": "DESCRICAO_DB",
+        "marca":        "MARCA",
+        "grupo":        "GRUPO",
+        "desc_final":   "DESC_FINAL",
+    }, inplace=True)
+
+    df["PRECO"] = pd.to_numeric(df["PRECO"], errors="coerce").fillna(0.0)
+    df["LINHA"] = pd.to_numeric(df["LINHA"], errors="coerce").fillna(0).astype(int)
+    for col in ("COD_SKU","DESCRICAO","EMBALAGEM","COR","COD_CITEL","DESCRICAO_DB","MARCA","GRUPO","DESC_FINAL"):
+        df[col] = df[col].fillna("").astype(str)
+
+    # UF não vem na query — adiciona
+    df["UF"] = uf
+    return df
