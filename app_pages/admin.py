@@ -269,12 +269,27 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
             if st.session_state.get(_REPORT_KEY):
                 _rpt = st.session_state[_REPORT_KEY]
                 st.markdown(f"### 📊 Relatório da última importação — {_rpt['data']}")
+                # Resumo geral
+                _s = _rpt.get("stats", {})
+                st.info(
+                    f"**{_s.get('total', '?')} produtos** processados — "
+                    f"🟢 +{_s.get('inseridos', 0)} novos  "
+                    f"🔄 {_s.get('atualizados', 0)} atualizados  "
+                    f"🔴 -{_s.get('removidos', 0)} removidos  "
+                    f"⚪ {_s.get('sem_alteracao', 0)} sem alteração"
+                )
+                # Alterações de preço
                 if _rpt["precos"]:
                     st.markdown(f"#### 💰 Alterações de Preço — {len(_rpt['precos'])} itens")
                     st.dataframe(pd.DataFrame(_rpt["precos"]), hide_index=True, use_container_width=True)
+                else:
+                    st.caption("💰 Nenhuma alteração de preço detectada nesta importação.")
+                # Novos vínculos CITEL
                 if _rpt["citel"]:
                     st.markdown(f"#### 🔗 Novos Vínculos CITEL — {len(_rpt['citel'])} itens")
                     st.dataframe(pd.DataFrame(_rpt["citel"]), hide_index=True, use_container_width=True)
+                else:
+                    st.caption("🔗 Nenhum novo vínculo CITEL detectado nesta importação.")
                 if st.button("✅ Fechar relatório"):
                     st.session_state.pop(_REPORT_KEY, None)
                     st.rerun()
@@ -358,17 +373,16 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                                 f"🟢 +{ins} novos  🔄 {upd} atualizados  "
                                 f"🔴 -{rem} removidos  ⚪ {same} sem alteração"
                             )
-                            # Coleta relatório de diff para exibir após o rerun
+                            # Coleta relatório de diff — SEMPRE salva para exibir após o rerun
                             _rpt_precos = [r for v in resultado.values() for r in v.get("precos_alterados", [])]
                             _rpt_citel  = [r for v in resultado.values() for r in v.get("novos_citel", [])]
-                            if _rpt_precos or _rpt_citel:
-                                st.session_state[_REPORT_KEY] = {
-                                    "precos": _rpt_precos,
-                                    "citel":  _rpt_citel,
-                                    "data":   datetime.now().strftime("%d/%m/%Y %H:%M"),
-                                }
-                            else:
-                                st.session_state.pop(_REPORT_KEY, None)
+                            st.session_state[_REPORT_KEY] = {
+                                "precos": _rpt_precos,
+                                "citel":  _rpt_citel,
+                                "data":   datetime.now().strftime("%d/%m/%Y %H:%M"),
+                                "stats":  {"total": tot, "inseridos": ins, "atualizados": upd,
+                                           "removidos": rem, "sem_alteracao": same},
+                            }
                         except Exception:
                             _exc_text = _tb.format_exc()
                             st.warning("⚠️ Falha ao sincronizar catálogo com o Supabase — app usará Excel local normalmente.")
