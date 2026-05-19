@@ -299,69 +299,81 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
 
             if ativar:
                 import tempfile, traceback as _tb
-                dest = Path(tempfile.gettempdir()) / pending_name
-                dest.write_bytes(pending_bytes)
-                st.session_state[excel_source_key] = str(dest)
-                st.session_state.pop("caches_warmed", None)
-                if clear_caches_fn:
-                    clear_caches_fn()
-
-                # Persiste no Supabase Storage
                 try:
-                    from db_supabase import upload_excel_storage
-                    with st.spinner("☁️ Salvando Excel no Supabase Storage..."):
-                        ok = upload_excel_storage(pending_bytes, pending_name)
-                    if ok:
-                        st.info("☁️ Excel salvo no Storage — persistirá após reinício do servidor.")
-                except Exception:
-                    pass
-
-                from datetime import datetime
-
-                # Importa catálogo para o Supabase
-                with st.spinner("⏳ Comparando e enviando catálogo para o Supabase... (pode levar ~1 minuto)"):
+                    dest = Path(tempfile.gettempdir()) / pending_name
+                    dest.write_bytes(pending_bytes)
+                    st.session_state[excel_source_key] = str(dest)
+                    st.session_state.pop("caches_warmed", None)
                     try:
-                        from importar_catalogo import importar
-                        resultado = importar(str(dest))
-                        tot  = sum(v["total"]         for v in resultado.values())
-                        ins  = sum(v["inseridos"]     for v in resultado.values())
-                        upd  = sum(v["atualizados"]   for v in resultado.values())
-                        rem  = sum(v["removidos"]     for v in resultado.values())
-                        same = sum(v["sem_alteracao"] for v in resultado.values())
-                        st.success(
-                            f"✅ Catálogo atualizado — **{tot} produtos**  \n"
-                            f"🟢 +{ins} novos  🔄 {upd} atualizados  "
-                            f"🔴 -{rem} removidos  ⚪ {same} sem alteração"
-                        )
+                        if clear_caches_fn:
+                            clear_caches_fn()
                     except Exception:
-                        st.warning("⚠️ Falha ao sincronizar catálogo com o Supabase — app usará Excel local normalmente.")
-                        with st.expander("🔍 Ver detalhe do erro"):
-                            st.code(_tb.format_exc())
+                        pass
 
-                # Registra data/nome da importação
-                _agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-                set_config("ultima_importacao", _agora)
-                set_config("excel_nome", pending_name)
-                registrar_auditoria(u.get("usuario", ""), "IMPORTACAO", pending_name)
+                    # Persiste no Supabase Storage
+                    try:
+                        from db_supabase import upload_excel_storage
+                        with st.spinner("☁️ Salvando Excel no Supabase Storage..."):
+                            ok = upload_excel_storage(pending_bytes, pending_name)
+                        if ok:
+                            st.info("☁️ Excel salvo no Storage — persistirá após reinício do servidor.")
+                    except Exception:
+                        pass
 
-                if clear_caches_fn:
-                    clear_caches_fn()
+                    from datetime import datetime
 
-                # Dispara sync CITEL
-                try:
-                    from db_supabase import dispatch_citel_sync
-                    ok_d, msg_d = dispatch_citel_sync(force=True)
-                    if ok_d:
-                        st.info("🔄 Sync CITEL disparado — dados atualizados em ~1 minuto.")
-                    else:
-                        st.caption(f"ℹ️ Sync CITEL automático indisponível: {msg_d}")
+                    # Importa catálogo para o Supabase
+                    with st.spinner("⏳ Comparando e enviando catálogo para o Supabase... (pode levar ~1 minuto)"):
+                        try:
+                            from importar_catalogo import importar
+                            resultado = importar(str(dest))
+                            tot  = sum(v["total"]         for v in resultado.values())
+                            ins  = sum(v["inseridos"]     for v in resultado.values())
+                            upd  = sum(v["atualizados"]   for v in resultado.values())
+                            rem  = sum(v["removidos"]     for v in resultado.values())
+                            same = sum(v["sem_alteracao"] for v in resultado.values())
+                            st.success(
+                                f"✅ Catálogo atualizado — **{tot} produtos**  \n"
+                                f"🟢 +{ins} novos  🔄 {upd} atualizados  "
+                                f"🔴 -{rem} removidos  ⚪ {same} sem alteração"
+                            )
+                        except Exception:
+                            st.warning("⚠️ Falha ao sincronizar catálogo com o Supabase — app usará Excel local normalmente.")
+                            with st.expander("🔍 Ver detalhe do erro"):
+                                st.code(_tb.format_exc())
+
+                    # Registra data/nome da importação
+                    _agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    set_config("ultima_importacao", _agora)
+                    set_config("excel_nome", pending_name)
+                    registrar_auditoria(u.get("usuario", ""), "IMPORTACAO", pending_name)
+
+                    try:
+                        if clear_caches_fn:
+                            clear_caches_fn()
+                    except Exception:
+                        pass
+
+                    # Dispara sync CITEL
+                    try:
+                        from db_supabase import dispatch_citel_sync
+                        ok_d, msg_d = dispatch_citel_sync(force=True)
+                        if ok_d:
+                            st.info("🔄 Sync CITEL disparado — dados atualizados em ~1 minuto.")
+                        else:
+                            st.caption(f"ℹ️ Sync CITEL automático indisponível: {msg_d}")
+                    except Exception:
+                        pass
+
+                    st.toast("Tabela atualizada!", icon="🎨")
+                    st.session_state.pop(_PEND_BYTES, None)
+                    st.session_state.pop(_PEND_NAME, None)
+                    st.rerun()
+
                 except Exception:
-                    pass
-
-                st.toast("Tabela atualizada!", icon="🎨")
-                st.session_state.pop(_PEND_BYTES, None)
-                st.session_state.pop(_PEND_NAME, None)
-                st.rerun()
+                    st.error("❌ Erro inesperado ao ativar a planilha.")
+                    with st.expander("🔍 Ver detalhe do erro"):
+                        st.code(_tb.format_exc())
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABA 5 — AUDITORIA
