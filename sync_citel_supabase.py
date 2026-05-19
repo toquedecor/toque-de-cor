@@ -112,7 +112,7 @@ def _remove_obsoletos(sb, skus_citel: set) -> int:
 # ── Detecção de mudanças ──────────────────────────────────────────────────────
 _FP_KEY      = "citel_fingerprint"
 _TS_KEY      = "citel_ultimo_sync"
-_CONFIG_TBL  = "config"
+_CONFIG_TBL  = "configuracoes"
 
 
 def _fingerprint_citel() -> str:
