@@ -277,13 +277,22 @@ with st.sidebar:
         db_ok, db_msg = check_db()
         sb_ok = supabase_ok()
         ultima = get_config("ultima_importacao", "")
-        st.session_state.sidebar_db_ok  = db_ok
-        st.session_state.sidebar_sb_ok  = sb_ok
-        st.session_state.sidebar_ultima = ultima
+        # Verifica se citel_itens do Supabase tem dados (fallback)
+        try:
+            from db_supabase import get_citel_itens
+            _df_c = get_citel_itens()
+            citel_via_sb = _df_c is not None and not _df_c.empty
+        except Exception:
+            citel_via_sb = False
+        st.session_state.sidebar_db_ok      = db_ok
+        st.session_state.sidebar_sb_ok      = sb_ok
+        st.session_state.sidebar_ultima     = ultima
+        st.session_state.sidebar_citel_via_sb = citel_via_sb
     else:
-        db_ok  = st.session_state.sidebar_db_ok
-        sb_ok  = st.session_state.sidebar_sb_ok
-        ultima = st.session_state.sidebar_ultima
+        db_ok        = st.session_state.sidebar_db_ok
+        sb_ok        = st.session_state.sidebar_sb_ok
+        ultima       = st.session_state.sidebar_ultima
+        citel_via_sb = st.session_state.get("sidebar_citel_via_sb", False)
 
     st.caption("**Status dos Bancos**")
     st.caption(f"{'🟢' if db_ok else '🔴'} MySQL CITEL")
@@ -295,6 +304,7 @@ with st.sidebar:
         check_db.clear()
         st.session_state.pop("caches_warmed", None)
         st.session_state.pop("sidebar_db_ok", None)
+        st.session_state.pop("sidebar_citel_via_sb", None)
         st.rerun()
 
     if ultima:

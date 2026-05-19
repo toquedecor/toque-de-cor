@@ -226,7 +226,11 @@ def render(
         _col_cfg["PREÇO C/ DESC."] = st.column_config.NumberColumn("Preço c/ Desc.", format="R$ %.2f", width=150, disabled=True)
 
     if not db_ok:
-        st.warning("⚠️ BD offline — COD CITEL, Grupo e Marca indisponíveis.")
+        citel_via_sb = st.session_state.get("sidebar_citel_via_sb", False)
+        if citel_via_sb:
+            st.info("🟡 MySQL offline — COD CITEL, Grupo e Marca via Supabase (sync diário).")
+        else:
+            st.warning("⚠️ BD offline — COD CITEL, Grupo e Marca indisponíveis.")
 
     # Chave inclui aplc_key e dlg_key: resetam o editor quando Aplicar/Fechar são clicados
     edited = st.data_editor(
