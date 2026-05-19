@@ -445,8 +445,8 @@ _STORAGE_PATH   = "excel/tabela_ativa.xlsx"
 
 def upload_excel_storage(file_bytes: bytes, filename: str) -> bool:
     """
-    Salva o Excel no Supabase Storage (bucket 'planilhas').
-    Sobrescreve qualquer versão anterior. Persiste entre restarts.
+    Salva o Excel no Supabase Storage (bucket 'planilhas'), path fixo excel/tabela_ativa.xlsx.
+    Usa upsert para sobrescrever sempre — garante que apenas um arquivo existe no bucket.
     """
     sb = get_supabase()
     if sb is None:
@@ -458,16 +458,14 @@ def upload_excel_storage(file_bytes: bytes, filename: str) -> bool:
         except Exception:
             pass  # Já existe
 
-        # Remove arquivo anterior e faz novo upload
-        try:
-            sb.storage.from_(_STORAGE_BUCKET).remove([_STORAGE_PATH])
-        except Exception:
-            pass
-
+        # Upsert: sobrescreve se existir, cria se não existir — sem acumulação de arquivos
         sb.storage.from_(_STORAGE_BUCKET).upload(
             _STORAGE_PATH,
             file_bytes,
-            {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+            file_options={
+                "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "upsert": "true",
+            },
         )
         set_config("excel_storage_filename", filename)
         return True
