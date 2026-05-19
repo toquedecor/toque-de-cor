@@ -401,6 +401,14 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
             if st.session_state.get(_IMPORT_DONE):
                 # ── FASE 2b: Relatório pós-importação ───────────────────────
                 import io as _io
+                def _fmt_brl(v) -> str:
+                    try:
+                        f = float(str(v).replace(",", ".").replace("R$", "").strip())
+                        s = f"{f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        return f"R$ {s}"
+                    except Exception:
+                        return str(v)
+                _BRL_COLS = {"Preço Anterior", "Preço Atual", "Diferença", "Preço"}
                 _rpt = st.session_state.get(_REPORT_KEY, {})
                 st.markdown(f"### 📊 Relatório da Importação — {_rpt.get('data', '')}")
                 _rs = _rpt.get("stats", {})
@@ -420,8 +428,12 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                         )
                     except Exception:
                         pass
+                    _df_disp = _df_p.copy()
+                    for _bc in _BRL_COLS:
+                        if _bc in _df_disp.columns:
+                            _df_disp[_bc] = _df_disp[_bc].apply(_fmt_brl)
                     st.markdown(f"#### 💰 Alterações de Preço — {len(_rpt['precos'])} itens")
-                    st.dataframe(_df_p, hide_index=True, use_container_width=True)
+                    st.dataframe(_df_disp, hide_index=True, use_container_width=True)
                 else:
                     st.caption("💰 Nenhuma alteração de preço nesta importação.")
                 if _rpt.get("citel"):
@@ -445,6 +457,9 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                                 )
                             except Exception:
                                 pass
+                            for _bc in _BRL_COLS:
+                                if _bc in _df_xl.columns:
+                                    _df_xl[_bc] = _df_xl[_bc].apply(_fmt_brl)
                             _df_xl.to_excel(_xlw, sheet_name="Precos", index=False)
                         if _rpt.get("citel"):
                             pd.DataFrame(_rpt["citel"]).to_excel(_xlw, sheet_name="CITEL", index=False)
