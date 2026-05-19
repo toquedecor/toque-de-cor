@@ -260,81 +260,108 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
             "Colunas: `UF | SKU | Descrição | Embalagem | Cor | Preço c/ ICMS`"
         )
 
-        uploaded = st.file_uploader("Selecionar arquivo Excel (.xlsx)", type=["xlsx"])
-        if uploaded:
-            import tempfile
-            dest = Path(tempfile.gettempdir()) / uploaded.name
-            dest.write_bytes(uploaded.getvalue())
-            try:
-                test = pd.read_excel(str(dest), sheet_name="Tabela RN", header=0)
-                st.success(f"✅ **{uploaded.name}** carregado — {len(test)} linhas na aba Tabela RN.")
+        _PEND_BYTES = "import_pending_bytes"
+        _PEND_NAME  = "import_pending_name"
 
-                if st.button("📥 Usar como tabela ativa e limpar cache", type="primary"):
-                    st.session_state[excel_source_key] = str(dest)
-                    st.session_state.pop("caches_warmed", None)
-                    if clear_caches_fn:
-                        clear_caches_fn()
-
-                    # Persiste no Supabase Storage para sobreviver a restarts do container
-                    try:
-                        from db_supabase import upload_excel_storage
-                        with st.spinner("☁️ Salvando Excel no Supabase Storage..."):
-                            ok = upload_excel_storage(uploaded.getvalue(), uploaded.name)
-                        if ok:
-                            st.info("☁️ Excel salvo no Storage — persistirá após reinício do servidor.")
-                    except Exception:
-                        pass
-                    from datetime import datetime
-
-                    # Importa catálogo para o Supabase em background
-                    with st.spinner("⏳ Comparando e enviando catálogo para o Supabase... (pode levar ~1 minuto)"):
-                        try:
-                            from importar_catalogo import importar
-                            resultado = importar(str(dest))
-                            # resultado = {uf: {inseridos, atualizados, removidos, sem_alteracao, total}}
-                            tot     = sum(v["total"]        for v in resultado.values())
-                            ins     = sum(v["inseridos"]    for v in resultado.values())
-                            upd     = sum(v["atualizados"]  for v in resultado.values())
-                            rem     = sum(v["removidos"]    for v in resultado.values())
-                            same    = sum(v["sem_alteracao"] for v in resultado.values())
-                            st.success(
-                                f"✅ Catálogo atualizado — **{tot} produtos**  \n"
-                                f"🟢 +{ins} novos  🔄 {upd} atualizados  "
-                                f"🔴 -{rem} removidos  ⚪ {same} sem alteração"
-                            )
-                        except Exception as e:
-                            st.warning(f"⚠️ Falha ao enviar catálogo ao Supabase: {e}. App usará Excel local.")
-
-                    # Registra data/nome da importação (sempre, independente do resultado acima)
-                    _agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-                    set_config("ultima_importacao", _agora)
-                    set_config("excel_nome", uploaded.name)
-
-                    registrar_auditoria(u.get("usuario",""), "IMPORTACAO", uploaded.name)
-                    # Limpa cache para forçar recarga do Supabase
-                    if clear_caches_fn:
-                        clear_caches_fn()
-
-                    # Dispara sync CITEL → Supabase imediatamente via GitHub Actions
-                    try:
-                        from db_supabase import dispatch_citel_sync
-                        ok_d, msg_d = dispatch_citel_sync(force=True)
-                        if ok_d:
-                            st.info("🔄 Sync CITEL disparado — dados atualizados em ~1 minuto.")
-                        else:
-                            st.caption(f"ℹ️ Sync CITEL automático indisponível: {msg_d}")
-                    except Exception:
-                        pass
-
-                    st.toast("Tabela atualizada!", icon="🎨")
+        if not st.session_state.get(_PEND_BYTES):
+            # ── FASE 1: Seleção e validação do arquivo ──────────────────────
+            uploaded = st.file_uploader("Selecionar arquivo Excel (.xlsx)", type=["xlsx"])
+            if uploaded:
+                import tempfile
+                dest = Path(tempfile.gettempdir()) / uploaded.name
+                dest.write_bytes(uploaded.getvalue())
+                try:
+                    test = pd.read_excel(str(dest), sheet_name="Tabela RN", header=0)
+                    st.info(f"✅ **{uploaded.name}** — {len(test)} linhas na aba Tabela RN. Clique em **Ativar** para confirmar.")
+                    # Armazena e troca para Fase 2
+                    st.session_state[_PEND_BYTES] = uploaded.getvalue()
+                    st.session_state[_PEND_NAME]  = uploaded.name
                     st.rerun()
-            except Exception as e:
-                dest.unlink(missing_ok=True)
-                st.error(f"Erro ao ler o arquivo: {e}")
+                except Exception as e:
+                    dest.unlink(missing_ok=True)
+                    st.error(f"Erro ao ler o arquivo: {e}")
+        else:
+            # ── FASE 2: Arquivo validado — aguardando confirmação ───────────
+            pending_name  = st.session_state[_PEND_NAME]
+            pending_bytes = st.session_state[_PEND_BYTES]
+            tamanho_mb    = round(len(pending_bytes) / 1024 / 1024, 2)
 
-        src = st.session_state.get(excel_source_key, "")
-        if src and Path(src).exists():
-            st.caption(f"📄 Tabela ativa em uso: `{Path(src).name}`")
+            st.success(f"📄 **{pending_name}** ({tamanho_mb} MB) — arquivo validado e pronto para ativar.")
+
+            col_btn, col_troca = st.columns([3, 1])
+            with col_btn:
+                ativar = st.button("📥 Ativar esta planilha", type="primary", use_container_width=True)
+            with col_troca:
+                if st.button("🔄 Trocar arquivo", use_container_width=True):
+                    st.session_state.pop(_PEND_BYTES, None)
+                    st.session_state.pop(_PEND_NAME, None)
+                    st.rerun()
+
+            if ativar:
+                import tempfile, traceback as _tb
+                dest = Path(tempfile.gettempdir()) / pending_name
+                dest.write_bytes(pending_bytes)
+                st.session_state[excel_source_key] = str(dest)
+                st.session_state.pop("caches_warmed", None)
+                if clear_caches_fn:
+                    clear_caches_fn()
+
+                # Persiste no Supabase Storage
+                try:
+                    from db_supabase import upload_excel_storage
+                    with st.spinner("☁️ Salvando Excel no Supabase Storage..."):
+                        ok = upload_excel_storage(pending_bytes, pending_name)
+                    if ok:
+                        st.info("☁️ Excel salvo no Storage — persistirá após reinício do servidor.")
+                except Exception:
+                    pass
+
+                from datetime import datetime
+
+                # Importa catálogo para o Supabase
+                with st.spinner("⏳ Comparando e enviando catálogo para o Supabase... (pode levar ~1 minuto)"):
+                    try:
+                        from importar_catalogo import importar
+                        resultado = importar(str(dest))
+                        tot  = sum(v["total"]         for v in resultado.values())
+                        ins  = sum(v["inseridos"]     for v in resultado.values())
+                        upd  = sum(v["atualizados"]   for v in resultado.values())
+                        rem  = sum(v["removidos"]     for v in resultado.values())
+                        same = sum(v["sem_alteracao"] for v in resultado.values())
+                        st.success(
+                            f"✅ Catálogo atualizado — **{tot} produtos**  \n"
+                            f"🟢 +{ins} novos  🔄 {upd} atualizados  "
+                            f"🔴 -{rem} removidos  ⚪ {same} sem alteração"
+                        )
+                    except Exception:
+                        st.warning("⚠️ Falha ao sincronizar catálogo com o Supabase — app usará Excel local normalmente.")
+                        with st.expander("🔍 Ver detalhe do erro"):
+                            st.code(_tb.format_exc())
+
+                # Registra data/nome da importação
+                _agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                set_config("ultima_importacao", _agora)
+                set_config("excel_nome", pending_name)
+                registrar_auditoria(u.get("usuario", ""), "IMPORTACAO", pending_name)
+
+                if clear_caches_fn:
+                    clear_caches_fn()
+
+                # Dispara sync CITEL
+                try:
+                    from db_supabase import dispatch_citel_sync
+                    ok_d, msg_d = dispatch_citel_sync(force=True)
+                    if ok_d:
+                        st.info("🔄 Sync CITEL disparado — dados atualizados em ~1 minuto.")
+                    else:
+                        st.caption(f"ℹ️ Sync CITEL automático indisponível: {msg_d}")
+                except Exception:
+                    pass
+
+                st.toast("Tabela atualizada!", icon="🎨")
+                st.session_state.pop(_PEND_BYTES, None)
+                st.session_state.pop(_PEND_NAME, None)
+                st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABA 5 — AUDITORIA
