@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS auditoria (
     detalhe   TEXT,
     criado_em TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Espelho CITEL: sincronizado pelo GitHub Actions diariamente
+CREATE TABLE IF NOT EXISTS citel_itens (
+    cod_fab      TEXT PRIMARY KEY,
+    cod_citel    TEXT NOT NULL DEFAULT '',
+    descricao_db TEXT NOT NULL DEFAULT '',
+    marca        TEXT NOT NULL DEFAULT '',
+    grupo        TEXT NOT NULL DEFAULT '',
+    atualizado_em TIMESTAMPTZ DEFAULT NOW()
+);
 """
 
 
@@ -425,4 +435,108 @@ def get_catalogo_uf(uf: str) -> "pd.DataFrame":
 
     # UF não vem na query — adiciona
     df["UF"] = uf
+    return df
+
+
+# ── Storage de Excel (persistência entre restarts do container) ───────────────
+_STORAGE_BUCKET = "planilhas"
+_STORAGE_PATH   = "excel/tabela_ativa.xlsx"
+
+
+def upload_excel_storage(file_bytes: bytes, filename: str) -> bool:
+    """
+    Salva o Excel no Supabase Storage (bucket 'planilhas').
+    Sobrescreve qualquer versão anterior. Persiste entre restarts.
+    """
+    sb = get_supabase()
+    if sb is None:
+        return False
+    try:
+        # Garante que o bucket existe
+        try:
+            sb.storage.create_bucket(_STORAGE_BUCKET, options={"public": False})
+        except Exception:
+            pass  # Já existe
+
+        # Remove arquivo anterior e faz novo upload
+        try:
+            sb.storage.from_(_STORAGE_BUCKET).remove([_STORAGE_PATH])
+        except Exception:
+            pass
+
+        sb.storage.from_(_STORAGE_BUCKET).upload(
+            _STORAGE_PATH,
+            file_bytes,
+            {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        )
+        set_config("excel_storage_filename", filename)
+        return True
+    except Exception:
+        return False
+
+
+def download_excel_storage() -> tuple:
+    """
+    Baixa o Excel do Supabase Storage.
+    Retorna (bytes, filename) ou (None, '') se não disponível.
+    """
+    sb = get_supabase()
+    if sb is None:
+        return None, ""
+    try:
+        filename = get_config("excel_storage_filename", "")
+        if not filename:
+            return None, ""
+        data = sb.storage.from_(_STORAGE_BUCKET).download(_STORAGE_PATH)
+        return data, filename
+    except Exception:
+        return None, ""
+
+
+# ── Espelho CITEL (fallback quando MySQL não está acessível) ──────────────────
+@st.cache_resource(ttl=3600)
+def get_citel_itens() -> "pd.DataFrame":
+    """
+    Retorna todos os registros da tabela citel_itens (espelho do MySQL CITEL).
+    Sincronizada pelo GitHub Actions diariamente.
+    Cache de 1h — zero latência após primeira carga.
+    """
+    import pandas as pd
+    sb = get_supabase()
+    if sb is None:
+        return pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"])
+
+    PAGE = 1000
+    rows = []
+    offset = 0
+    while True:
+        try:
+            r = (
+                sb.table("citel_itens")
+                .select("cod_fab,cod_citel,descricao_db,marca,grupo")
+                .range(offset, offset + PAGE - 1)
+                .execute()
+            )
+            batch = r.data or []
+            rows.extend(batch)
+            if len(batch) < PAGE:
+                break
+            offset += PAGE
+        except Exception:
+            break
+
+    if not rows:
+        return pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"])
+
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    df.rename(columns={
+        "cod_fab":      "COD_FAB",
+        "cod_citel":    "COD_CITEL",
+        "descricao_db": "DESCRICAO_DB",
+        "marca":        "MARCA",
+        "grupo":        "GRUPO",
+    }, inplace=True)
+    for col in ("COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"):
+        df[col] = df[col].fillna("").astype(str)
     return df

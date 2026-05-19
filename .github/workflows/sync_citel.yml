@@ -1,0 +1,32 @@
+name: Sync CITEL → Supabase
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC diariamente (03:00 BRT)
+  workflow_dispatch:        # permite rodar manualmente a qualquer hora
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: pip install PyMySQL supabase python-dotenv
+
+      - name: Executar sync CITEL → Supabase
+        env:
+          MYSQL_HOST:     ${{ secrets.MYSQL_HOST }}
+          MYSQL_USER:     ${{ secrets.MYSQL_USER }}
+          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+          MYSQL_PORT:     ${{ secrets.MYSQL_PORT }}
+          MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
+          SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
+        run: python sync_citel_supabase.py

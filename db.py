@@ -14,11 +14,20 @@ import streamlit as st
 from pathlib import Path
 from datetime import datetime
 
+# Tenta mysql-connector-python; fallback para PyMySQL (sem dependência de protobuf)
+_DRIVER = None
 try:
     import mysql.connector
     _MYSQL_OK = True
+    _DRIVER = "connector"
 except Exception:
-    _MYSQL_OK = False
+    try:
+        import pymysql
+        import pymysql.cursors
+        _MYSQL_OK = True
+        _DRIVER = "pymysql"
+    except Exception:
+        _MYSQL_OK = False
 
 _DB_CONFIG = {
     "host":               _os.environ.get("MYSQL_HOST",     ""),
@@ -43,11 +52,22 @@ _CACHE_TTL  = 3600  # 1 hora
 def _get_conn():
     """
     Conexão MySQL mantida viva entre reruns pelo st.cache_resource.
-    Elimina o custo de handshake TCP+auth a cada render.
+    Suporta mysql-connector-python e PyMySQL.
     """
     if not _MYSQL_OK:
-        raise RuntimeError("mysql-connector-python não está disponível")
-    return mysql.connector.connect(**_DB_CONFIG)
+        raise RuntimeError("Nenhum driver MySQL disponível")
+    if _DRIVER == "connector":
+        return mysql.connector.connect(**_DB_CONFIG)
+    # PyMySQL
+    return pymysql.connect(
+        host=_DB_CONFIG["host"],
+        user=_DB_CONFIG["user"],
+        password=_DB_CONFIG["password"],
+        port=_DB_CONFIG["port"],
+        database=_DB_CONFIG["database"],
+        connect_timeout=_DB_CONFIG["connection_timeout"],
+        cursorclass=pymysql.cursors.DictCursor,
+    )
 
 
 def _run(sql: str, params: list) -> list:
@@ -55,15 +75,19 @@ def _run(sql: str, params: list) -> list:
     for _ in range(2):
         try:
             conn = _get_conn()
-            if not conn.is_connected():
-                conn.reconnect(attempts=2, delay=1)
-            cur = conn.cursor(dictionary=True)
+            if _DRIVER == "connector":
+                if not conn.is_connected():
+                    conn.reconnect(attempts=2, delay=1)
+                cur = conn.cursor(dictionary=True)
+            else:
+                conn.ping(reconnect=True)
+                cur = conn.cursor()
             cur.execute(sql, params)
-            rows = cur.fetchall()
+            rows = list(cur.fetchall())
             cur.close()
             return rows
-        except mysql.connector.Error:
-            _get_conn.clear()   # força nova conexão na próxima tentativa
+        except Exception:
+            _get_conn.clear()
     return []
 
 
@@ -133,11 +157,14 @@ def _fetch(skus_list: list) -> pd.DataFrame:
 def test_connection() -> tuple:
     """Testa a conexão com o BD. Retorna (bool, mensagem)."""
     if not _MYSQL_OK:
-        return False, "mysql-connector-python não instalado"
+        return False, "Driver MySQL não disponível"
     try:
         conn = _get_conn()
-        if not conn.is_connected():
-            conn.reconnect(attempts=1, delay=0)
+        if _DRIVER == "connector":
+            if not conn.is_connected():
+                conn.reconnect(attempts=1, delay=0)
+        else:
+            conn.ping(reconnect=True)
         return True, "Banco de dados conectado."
     except Exception as exc:
         return False, str(exc)
@@ -147,10 +174,11 @@ def query_items(skus: list) -> pd.DataFrame:
     """
     Retorna COD_CITEL, DESCRICAO_DB e MARCA para a lista de SKUs.
 
-    Estratégia de 3 camadas:
+    Estratégia de 4 camadas:
       1. Cache em disco  → sem consulta remota (rápido mesmo após reiniciar o app)
       2. Cache incremental → busca apenas SKUs ausentes (evita re-query completa)
-      3. Consulta BD completa → somente na primeira execução ou após expiração
+      3. MySQL CITEL direto → quando disponível
+      4. Supabase citel_itens → fallback quando MySQL não acessível (sincronizado pelo GitHub Actions)
     """
     if not skus:
         return _EMPTY.copy()
@@ -162,21 +190,32 @@ def query_items(skus: list) -> pd.DataFrame:
     if cached_df is not None:
         missing = skus_set - cached_skus
         if not missing:
-            # Cache completo: retorna filtrando pelos SKUs solicitados
             return cached_df[cached_df["COD_FAB"].isin(skus_set)].reset_index(drop=True)
 
-        # Cache parcial: busca apenas os SKUs ausentes
         new_df = _fetch(list(missing))
         full   = pd.concat([cached_df, new_df], ignore_index=True)
         full   = full.drop_duplicates("COD_FAB", keep="first")
         _disk_save(full, cached_skus | missing)
         return full[full["COD_FAB"].isin(skus_set)].reset_index(drop=True)
 
-    # Sem cache: consulta tudo de uma vez
+    # Sem cache: tenta MySQL direto
     df = _fetch(list(skus_set))
     if not df.empty:
         _disk_save(df, skus_set)
-    return df
+        return df
+
+    # Fallback: Supabase citel_itens (espelho sincronizado pelo GitHub Actions)
+    try:
+        from db_supabase import get_citel_itens
+        sb_df = get_citel_itens()
+        if not sb_df.empty:
+            result = sb_df[sb_df["COD_FAB"].isin(skus_set)].reset_index(drop=True)
+            if not result.empty:
+                return result
+    except Exception:
+        pass
+
+    return _EMPTY.copy()
 
 
 def get_cached_data() -> "pd.DataFrame | None":
