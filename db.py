@@ -16,11 +16,11 @@ from pathlib import Path
 from datetime import datetime
 
 _DB_CONFIG = {
-    "host":               _os.environ.get("MYSQL_HOST",     "SRVORACLEBR18.CITELSOFTWARE.COM.BR"),
-    "user":               _os.environ.get("MYSQL_USER",     "converte_toquedecor"),
-    "password":           _os.environ.get("MYSQL_PASSWORD", "converte13347"),
-    "port":               int(_os.environ.get("MYSQL_PORT", "61670")),
-    "database":           _os.environ.get("MYSQL_DATABASE", "AUTCOM"),
+    "host":               _os.environ.get("MYSQL_HOST",     ""),
+    "user":               _os.environ.get("MYSQL_USER",     ""),
+    "password":           _os.environ.get("MYSQL_PASSWORD", ""),
+    "port":               int(_os.environ.get("MYSQL_PORT", "3306")),
+    "database":           _os.environ.get("MYSQL_DATABASE", ""),
     "connection_timeout": 10,
     "connect_timeout":    10,
 }
