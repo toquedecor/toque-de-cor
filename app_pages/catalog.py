@@ -227,9 +227,7 @@ def render(
 
     if not db_ok:
         citel_via_sb = st.session_state.get("sidebar_citel_via_sb", False)
-        if citel_via_sb:
-            st.info("🟡 MySQL offline — COD CITEL, Grupo e Marca via Supabase (sync diário).")
-        else:
+        if not citel_via_sb:
             st.warning("⚠️ BD offline — COD CITEL, Grupo e Marca indisponíveis.")
 
     # Chave inclui aplc_key e dlg_key: resetam o editor quando Aplicar/Fechar são clicados
@@ -294,8 +292,7 @@ def render(
     n_display = len(_df_edit)
     filtrado  = f" (filtrado de {n_total})" if n_display < n_total else ""
     st.caption(
-        f"**{n_display}** itens{filtrado} — UF: **{uf}** | "
-        f"BD: {'✅ CITEL' if db_ok else '⚠️ offline'}"
+        f"**{n_display}** itens{filtrado} — UF: **{uf}**"
         + (f" | **{len(_sel_skus)}** selecionado(s)" if _sel_skus else "")
     )
 
