@@ -13,6 +13,7 @@ Sessão: st.session_state com expiração configurável (padrão 8h).
 
 import hashlib
 import os
+import uuid
 import streamlit as st
 from datetime import datetime, timedelta
 
@@ -24,7 +25,25 @@ except ImportError:
     _BCRYPT_OK = False
 
 # ── Constantes ────────────────────────────────────────────────────────────────
-SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "8"))
+SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "8"))  # mantido por compatibilidade
+
+# ── Token store (persiste entre reconexões WebSocket — vive no processo Python) ─
+@st.cache_resource
+def _token_store() -> dict:
+    """Dict {token_uuid: user_data}. Sobrevive a reconexões sem precisar de DB."""
+    return {}
+
+
+def _get_cookie_ctrl():
+    """Retorna CookieController criando uma única instância por sessão WebSocket."""
+    _KEY = "_tdc_cookie_ctrl"
+    if _KEY not in st.session_state:
+        try:
+            from streamlit_cookies_controller import CookieController
+            st.session_state[_KEY] = CookieController(key="tdc_auth")
+        except Exception:
+            st.session_state[_KEY] = None
+    return st.session_state.get(_KEY)
 
 PERFIS = {
     "admin":      "Administrador",
@@ -230,29 +249,63 @@ def fazer_login(usuario: str, senha: str) -> tuple[bool, str]:
         return False, "Senha incorreta."
 
     _perfil = dados.get("perfil", "vendedor")
-    st.session_state["auth_usuario"]   = dados["usuario"]
-    st.session_state["auth_nome"]      = dados.get("nome", usuario)
-    st.session_state["auth_perfil"]    = _perfil
-    st.session_state["auth_loja"]      = dados.get("loja", "")
-    st.session_state["auth_expira"]    = datetime.now() + timedelta(hours=SESSION_HOURS)
+    _token  = str(uuid.uuid4())
+    _token_store()[_token] = {
+        "usuario": dados["usuario"],
+        "nome":    dados.get("nome", usuario),
+        "perfil":  _perfil,
+        "loja":    dados.get("loja", ""),
+    }
+    st.session_state["auth_usuario"]    = dados["usuario"]
+    st.session_state["auth_nome"]       = dados.get("nome", usuario)
+    st.session_state["auth_perfil"]     = _perfil
+    st.session_state["auth_loja"]       = dados.get("loja", "")
     st.session_state["auth_permissoes"] = _permissoes_do_perfil(_perfil)
+    st.session_state["auth_token"]      = _token
+    # Persiste token no cookie — sobrevive a reconexões WebSocket
+    ctrl = _get_cookie_ctrl()
+    if ctrl:
+        ctrl.set("tdc_session", _token)
     return True, "Login realizado com sucesso."
 
 
 def fazer_logout():
     """Encerra a sessão atual."""
-    for key in ["auth_usuario", "auth_nome", "auth_perfil", "auth_loja", "auth_expira", "auth_permissoes"]:
+    token = st.session_state.get("auth_token")
+    if token:
+        _token_store().pop(token, None)
+    ctrl = _get_cookie_ctrl()
+    if ctrl:
+        try:
+            ctrl.remove("tdc_session")
+        except Exception:
+            pass
+    for key in ["auth_usuario", "auth_nome", "auth_perfil", "auth_loja",
+                "auth_expira", "auth_permissoes", "auth_token", "_tdc_cookie_ctrl"]:
         st.session_state.pop(key, None)
 
 
 def esta_logado() -> bool:
-    """Verifica se há sessão ativa e não expirada."""
-    if "auth_expira" not in st.session_state:
-        return False
-    if datetime.now() > st.session_state["auth_expira"]:
-        fazer_logout()
-        return False
-    return True
+    """Verifica se há sessão ativa. Restaura automaticamente via cookie após reconexão."""
+    if "auth_usuario" in st.session_state:
+        return True
+    # session_state vazio (reconexão WebSocket ou refresh) — tenta restaurar pelo cookie
+    ctrl = _get_cookie_ctrl()
+    if ctrl:
+        try:
+            token = ctrl.get("tdc_session")
+            if token and token in _token_store():
+                dados = _token_store()[token]
+                st.session_state["auth_usuario"]    = dados["usuario"]
+                st.session_state["auth_nome"]       = dados["nome"]
+                st.session_state["auth_perfil"]     = dados["perfil"]
+                st.session_state["auth_loja"]       = dados["loja"]
+                st.session_state["auth_permissoes"] = _permissoes_do_perfil(dados["perfil"])
+                st.session_state["auth_token"]      = token
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def usuario_atual() -> dict:
