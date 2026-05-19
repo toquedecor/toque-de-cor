@@ -262,8 +262,8 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
 
         uploaded = st.file_uploader("Selecionar arquivo Excel (.xlsx)", type=["xlsx"])
         if uploaded:
-            BASE_DIR = Path(__file__).parent.parent
-            dest = BASE_DIR / uploaded.name
+            import tempfile
+            dest = Path(tempfile.gettempdir()) / uploaded.name
             dest.write_bytes(uploaded.getvalue())
             try:
                 test = pd.read_excel(str(dest), sheet_name="Tabela RN", header=0)
