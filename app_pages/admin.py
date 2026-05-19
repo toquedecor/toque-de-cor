@@ -265,109 +265,7 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
         _REPORT_KEY  = "import_report"
         _IMPORT_DONE = "import_done"
 
-        if st.session_state.get(_IMPORT_DONE) and st.session_state.get(_PEND_BYTES):
-            # ── FASE 2.5: Relatório pós-importação ───────────────────────────
-            import io as _io
-            _rpt = st.session_state.get(_REPORT_KEY, {})
-            st.markdown(f"### 📊 Relatório da Importação — {_rpt.get('data', '')}")
-            _rs = _rpt.get("stats", {})
-            st.info(
-                f"**{_rs.get('total', '?')} produtos** processados — "
-                f"🟢 +{_rs.get('inseridos', 0)} novos  "
-                f"🔄 {_rs.get('atualizados', 0)} atualizados  "
-                f"🔴 -{_rs.get('removidos', 0)} removidos  "
-                f"⚪ {_rs.get('sem_alteracao', 0)} sem alteração"
-            )
-            if _rpt.get("precos"):
-                st.markdown(f"#### 💰 Alterações de Preço — {len(_rpt['precos'])} itens")
-                st.dataframe(pd.DataFrame(_rpt["precos"]), hide_index=True, use_container_width=True)
-            else:
-                st.caption("💰 Nenhuma alteração de preço nesta importação.")
-            if _rpt.get("citel"):
-                st.markdown(f"#### 🔗 Novos Vínculos CITEL — {len(_rpt['citel'])} itens")
-                st.dataframe(pd.DataFrame(_rpt["citel"]), hide_index=True, use_container_width=True)
-            else:
-                st.caption("🔗 Nenhum novo vínculo CITEL nesta importação.")
-            # ── Botões de exportação ─────────────────────────────────────────
-            _fn = "relatorio_" + _rpt.get("data", "").replace("/", "").replace(" ", "_").replace(":", "")
-            _ec, _pc, _fc = st.columns([2, 2, 3])
-            with _ec:
-                _xbuf = _io.BytesIO()
-                with pd.ExcelWriter(_xbuf, engine="openpyxl") as _xlw:
-                    pd.DataFrame([_rs]).to_excel(_xlw, sheet_name="Resumo", index=False)
-                    if _rpt.get("precos"):
-                        pd.DataFrame(_rpt["precos"]).to_excel(_xlw, sheet_name="Precos", index=False)
-                    if _rpt.get("citel"):
-                        pd.DataFrame(_rpt["citel"]).to_excel(_xlw, sheet_name="CITEL", index=False)
-                _xbuf.seek(0)
-                st.download_button("📥 Exportar Excel", _xbuf, file_name=f"{_fn}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True)
-            with _pc:
-                try:
-                    from fpdf import FPDF as _FPDF
-                    _pdf = _FPDF(orientation="L", unit="mm", format="A4")
-                    _pdf.set_auto_page_break(auto=True, margin=15)
-                    _pdf.add_page()
-                    _PW = _pdf.w - 2 * _pdf.l_margin
-                    _pdf.set_font("Helvetica", "B", 14)
-                    _pdf.cell(0, 10, "Toque de Cor - Relatorio de Importacao", ln=True, align="C")
-                    _pdf.set_font("Helvetica", "", 9)
-                    _pdf.cell(0, 7,
-                        f"Data: {_rpt.get('data', '')}   |   "
-                        f"Total: {_rs.get('total', 0)}   Novos: +{_rs.get('inseridos', 0)}   "
-                        f"Atualizados: {_rs.get('atualizados', 0)}   "
-                        f"Removidos: -{_rs.get('removidos', 0)}",
-                        ln=True, align="C")
-                    _pdf.ln(4)
-                    def _safe_pdf(text: str) -> str:
-                        """Converte texto para Latin-1 seguro para fontes core do fpdf2."""
-                        subs = {"—": "-", "–": "-", "\u2018": "'", "\u2019": "'",
-                                "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u00b7": "."}
-                        for k, v in subs.items():
-                            text = text.replace(k, v)
-                        return text.encode("latin-1", errors="replace").decode("latin-1")
-                    def _ptab(rows, title):
-                        if not rows:
-                            return
-                        _pdf.set_font("Helvetica", "B", 10)
-                        _pdf.cell(0, 7, _safe_pdf(title), ln=True)
-                        _cols = list(rows[0].keys())
-                        _cw = _PW / len(_cols)
-                        _pdf.set_fill_color(210, 210, 210)
-                        _pdf.set_font("Helvetica", "B", 7)
-                        for _c in _cols:
-                            _pdf.cell(_cw, 6, _safe_pdf(str(_c)[:20]), border=1, fill=True)
-                        _pdf.ln()
-                        _pdf.set_font("Helvetica", "", 7)
-                        for _r in rows:
-                            for _c in _cols:
-                                _v = _safe_pdf(str(_r.get(_c, "")))
-                                while _v and _pdf.get_string_width(_v) > _cw - 1.5:
-                                    _v = _v[:-1]
-                                _pdf.cell(_cw, 5, _v, border=1)
-                            _pdf.ln()
-                        _pdf.ln(3)
-                    if _rpt.get("precos"):
-                        _ptab(_rpt["precos"], f"Alteracoes de Preco ({len(_rpt['precos'])} itens)")
-                    else:
-                        _pdf.set_font("Helvetica", "I", 9)
-                        _pdf.cell(0, 6, "Nenhuma alteracao de preco nesta importacao.", ln=True)
-                    if _rpt.get("citel"):
-                        _ptab(_rpt["citel"], f"Novos Vinculos CITEL ({len(_rpt['citel'])} itens)")
-                    else:
-                        _pdf.set_font("Helvetica", "I", 9)
-                        _pdf.cell(0, 6, "Nenhum novo vinculo CITEL nesta importacao.", ln=True)
-                    st.download_button("📄 Exportar PDF", bytes(_pdf.output()),
-                        file_name=f"{_fn}.pdf", mime="application/pdf",
-                        use_container_width=True)
-                except ImportError:
-                    st.caption("PDF indisponível")
-            with _fc:
-                if st.button("✅ Fechar relatório e finalizar", type="primary", use_container_width=True):
-                    for _k in (_PEND_BYTES, _PEND_NAME, _REPORT_KEY, _IMPORT_DONE):
-                        st.session_state.pop(_k, None)
-        elif not st.session_state.get(_PEND_BYTES):
+        if not st.session_state.get(_PEND_BYTES):
             # ── FASE 1: Seleção e validação do arquivo ──────────────────────
             uploaded = st.file_uploader("Selecionar arquivo Excel (.xlsx)", type=["xlsx"])
             if uploaded:
@@ -391,21 +289,25 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                     _prog.empty()
                     st.error(f"Erro ao ler o arquivo: {e}")
         else:
-            # ── FASE 2: Arquivo validado — aguardando confirmação ───────────
+            # ── FASE 2: Arquivo pendente ─────────────────────────────────────
             pending_name  = st.session_state[_PEND_NAME]
             pending_bytes = st.session_state[_PEND_BYTES]
-            tamanho_mb    = round(len(pending_bytes) / 1024 / 1024, 2)
 
-            st.success(f"📄 **{pending_name}** ({tamanho_mb} MB) — arquivo validado e pronto para ativar.")
+            if not st.session_state.get(_IMPORT_DONE):
+                # ── FASE 2a: Aguardando confirmação ──────────────────────────
+                tamanho_mb = round(len(pending_bytes) / 1024 / 1024, 2)
+                st.success(f"📄 **{pending_name}** ({tamanho_mb} MB) — arquivo validado e pronto para ativar.")
 
-            col_btn, col_troca = st.columns([3, 1])
-            with col_btn:
-                ativar = st.button("📥 Ativar esta planilha", type="primary", use_container_width=True)
-            with col_troca:
-                if st.button("🔄 Trocar arquivo", use_container_width=True):
-                    st.session_state.pop(_PEND_BYTES, None)
-                    st.session_state.pop(_PEND_NAME, None)
-                    st.rerun()
+                col_btn, col_troca = st.columns([3, 1])
+                with col_btn:
+                    ativar = st.button("📥 Ativar esta planilha", type="primary", use_container_width=True)
+                with col_troca:
+                    if st.button("🔄 Trocar arquivo", use_container_width=True):
+                        st.session_state.pop(_PEND_BYTES, None)
+                        st.session_state.pop(_PEND_NAME, None)
+                        st.rerun()
+            else:
+                ativar = False
 
             if ativar:
                 import tempfile, traceback as _tb
@@ -489,12 +391,156 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
 
                     st.toast("Tabela atualizada!", icon="🎨")
                     st.session_state[_IMPORT_DONE] = True
-                    st.rerun()
+                    # Sem st.rerun() — mantém aba ativa
 
                 except Exception:
                     st.error("❌ Erro inesperado ao ativar a planilha.")
                     with st.expander("🔍 Ver detalhe do erro"):
                         st.code(_tb.format_exc())
+
+            if st.session_state.get(_IMPORT_DONE):
+                # ── FASE 2b: Relatório pós-importação ───────────────────────
+                import io as _io
+                _rpt = st.session_state.get(_REPORT_KEY, {})
+                st.markdown(f"### 📊 Relatório da Importação — {_rpt.get('data', '')}")
+                _rs = _rpt.get("stats", {})
+                st.info(
+                    f"**{_rs.get('total', '?')} produtos** processados — "
+                    f"🟢 +{_rs.get('inseridos', 0)} novos  "
+                    f"🔄 {_rs.get('atualizados', 0)} atualizados  "
+                    f"🔴 -{_rs.get('removidos', 0)} removidos  "
+                    f"⚪ {_rs.get('sem_alteracao', 0)} sem alteração"
+                )
+                if _rpt.get("precos"):
+                    _df_p = pd.DataFrame(_rpt["precos"])
+                    try:
+                        _df_p["Diferença"] = (
+                            pd.to_numeric(_df_p["Preço Atual"], errors="coerce")
+                            - pd.to_numeric(_df_p["Preço Anterior"], errors="coerce")
+                        )
+                    except Exception:
+                        pass
+                    st.markdown(f"#### 💰 Alterações de Preço — {len(_rpt['precos'])} itens")
+                    st.dataframe(_df_p, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("💰 Nenhuma alteração de preço nesta importação.")
+                if _rpt.get("citel"):
+                    st.markdown(f"#### 🔗 Novos Vínculos CITEL — {len(_rpt['citel'])} itens")
+                    st.dataframe(pd.DataFrame(_rpt["citel"]), hide_index=True, use_container_width=True)
+                else:
+                    st.caption("🔗 Nenhum novo vínculo CITEL nesta importação.")
+                # ── Botões de exportação ─────────────────────────────────────
+                _fn = "relatorio_" + _rpt.get("data", "").replace("/", "").replace(" ", "_").replace(":", "")
+                _ec, _pc, _fc = st.columns([2, 2, 3])
+                with _ec:
+                    _xbuf = _io.BytesIO()
+                    with pd.ExcelWriter(_xbuf, engine="openpyxl") as _xlw:
+                        pd.DataFrame([_rs]).to_excel(_xlw, sheet_name="Resumo", index=False)
+                        if _rpt.get("precos"):
+                            _df_xl = pd.DataFrame(_rpt["precos"])
+                            try:
+                                _df_xl["Diferença"] = (
+                                    pd.to_numeric(_df_xl["Preço Atual"], errors="coerce")
+                                    - pd.to_numeric(_df_xl["Preço Anterior"], errors="coerce")
+                                )
+                            except Exception:
+                                pass
+                            _df_xl.to_excel(_xlw, sheet_name="Precos", index=False)
+                        if _rpt.get("citel"):
+                            pd.DataFrame(_rpt["citel"]).to_excel(_xlw, sheet_name="CITEL", index=False)
+                    _xbuf.seek(0)
+                    st.download_button("📥 Exportar Excel", _xbuf, file_name=f"{_fn}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True)
+                with _pc:
+                    try:
+                        from fpdf import FPDF as _FPDF
+                        _pdf = _FPDF(orientation="L", unit="mm", format="A4")
+                        _pdf.set_auto_page_break(auto=True, margin=15)
+                        _pdf.add_page()
+                        _PW = _pdf.w - 2 * _pdf.l_margin
+                        _pdf.set_font("Helvetica", "B", 14)
+                        _pdf.cell(0, 10, "Toque de Cor - Relatorio de Importacao", ln=True, align="C")
+                        _pdf.set_font("Helvetica", "", 9)
+                        _pdf.cell(0, 7,
+                            f"Data: {_rpt.get('data', '')}   |   "
+                            f"Total: {_rs.get('total', 0)}   Novos: +{_rs.get('inseridos', 0)}   "
+                            f"Atualizados: {_rs.get('atualizados', 0)}   "
+                            f"Removidos: -{_rs.get('removidos', 0)}",
+                            ln=True, align="C")
+                        _pdf.ln(4)
+                        def _safe_pdf(text: str) -> str:
+                            subs = {"—": "-", "–": "-", "\u2018": "'", "\u2019": "'",
+                                    "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u00b7": "."}
+                            for k, v in subs.items():
+                                text = text.replace(k, v)
+                            return text.encode("latin-1", errors="replace").decode("latin-1")
+                        def _brl(v) -> str:
+                            try:
+                                f = float(str(v).replace(",", ".").replace("R$", "").strip())
+                                s = f"{f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                return f"R$ {s}"
+                            except Exception:
+                                return str(v)
+                        _PRICE_COLS = {"Preço Anterior", "Preço Atual", "Preço", "Diferença"}
+                        _COL_W = {
+                            "UF": 12, "SKU": 25, "COD CITEL": 22, "Descrição": 80,
+                            "Embalagem": 20, "Cor": 20, "Preço Anterior": 24,
+                            "Preço Atual": 24, "Diferença": 22, "Preço": 28,
+                        }
+                        def _ptab(rows, title):
+                            if not rows:
+                                return
+                            _pdf.set_font("Helvetica", "B", 10)
+                            _pdf.cell(0, 7, _safe_pdf(title), ln=True)
+                            _cols = list(rows[0].keys())
+                            _raw_w = [_COL_W.get(_c, 28) for _c in _cols]
+                            _scale = _PW / sum(_raw_w)
+                            _widths = [w * _scale for w in _raw_w]
+                            _pdf.set_fill_color(210, 210, 210)
+                            _pdf.set_font("Helvetica", "B", 7)
+                            for _c, _cw in zip(_cols, _widths):
+                                _pdf.cell(_cw, 6, _safe_pdf(str(_c)[:22]), border=1, fill=True)
+                            _pdf.ln()
+                            _pdf.set_font("Helvetica", "", 7)
+                            for _r in rows:
+                                for _c, _cw in zip(_cols, _widths):
+                                    _raw = _brl(_r.get(_c, "")) if _c in _PRICE_COLS else str(_r.get(_c, ""))
+                                    _v = _safe_pdf(_raw)
+                                    while _v and _pdf.get_string_width(_v) > _cw - 1.5:
+                                        _v = _v[:-1]
+                                    _pdf.cell(_cw, 5, _v, border=1)
+                                _pdf.ln()
+                            _pdf.ln(3)
+                        if _rpt.get("precos"):
+                            _precos_pdf = []
+                            for _r in _rpt["precos"]:
+                                _row = dict(_r)
+                                try:
+                                    _pa = float(str(_row.get("Preço Anterior", 0)).replace(",", "."))
+                                    _pu = float(str(_row.get("Preço Atual", 0)).replace(",", "."))
+                                    _row["Diferença"] = round(_pu - _pa, 2)
+                                except Exception:
+                                    _row["Diferença"] = ""
+                                _precos_pdf.append(_row)
+                            _ptab(_precos_pdf, f"Alteracoes de Preco ({len(_precos_pdf)} itens)")
+                        else:
+                            _pdf.set_font("Helvetica", "I", 9)
+                            _pdf.cell(0, 6, "Nenhuma alteracao de preco nesta importacao.", ln=True)
+                        if _rpt.get("citel"):
+                            _ptab(_rpt["citel"], f"Novos Vinculos CITEL ({len(_rpt['citel'])} itens)")
+                        else:
+                            _pdf.set_font("Helvetica", "I", 9)
+                            _pdf.cell(0, 6, "Nenhum novo vinculo CITEL nesta importacao.", ln=True)
+                        st.download_button("📄 Exportar PDF", bytes(_pdf.output()),
+                            file_name=f"{_fn}.pdf", mime="application/pdf",
+                            use_container_width=True)
+                    except ImportError:
+                        st.caption("PDF indisponível")
+                with _fc:
+                    if st.button("✅ Fechar relatório e finalizar", type="primary", use_container_width=True):
+                        for _k in (_PEND_BYTES, _PEND_NAME, _REPORT_KEY, _IMPORT_DONE):
+                            st.session_state.pop(_k, None)
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABA 5 — AUDITORIA
