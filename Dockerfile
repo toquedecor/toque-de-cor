@@ -1,5 +1,8 @@
 FROM python:3.11-slim
 
+# Hugging Face Spaces requires non-root user with UID 1000
+RUN useradd -m -u 1000 appuser
+
 WORKDIR /app
 
 # Dependências do sistema
@@ -8,21 +11,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Dependências Python
-COPY requirements_web.txt .
-RUN pip install --no-cache-dir -r requirements_web.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Código da aplicação
-COPY . .
+COPY --chown=appuser:appuser . .
 
-# Porta do Streamlit
-EXPOSE 8501
+USER appuser
 
-# Health check
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+# Porta obrigatória no Hugging Face Spaces
+EXPOSE 7860
 
 # Iniciar app
-ENTRYPOINT ["streamlit", "run", "app_web.py", \
-            "--server.port=8501", \
-            "--server.address=0.0.0.0", \
-            "--server.headless=true", \
-            "--browser.gatherUsageStats=false"]
+CMD ["streamlit", "run", "app_web.py", \
+     "--server.port=7860", \
+     "--server.address=0.0.0.0", \
+     "--server.headless=true", \
+     "--browser.gatherUsageStats=false"]
