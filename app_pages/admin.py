@@ -244,6 +244,16 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
     # ══════════════════════════════════════════════════════════════════════════
     with t_imp:
         st.markdown("### Importar Nova Tabela de Preços")
+
+        # ── Status da tabela atual ──────────────────────────────────────────
+        ultima = get_config("ultima_importacao", "")
+        nome   = get_config("excel_nome", "")
+        if ultima:
+            st.success(f"📄 **Tabela ativa:** `{nome or '—'}`  \n🕒 **Importada em:** {ultima}")
+        else:
+            st.warning("⚠️ Nenhuma importação registrada ainda.")
+
+        st.divider()
         st.markdown(
             "Selecione um arquivo `.xlsx` com as abas "
             "**Tabela RN, Tabela BA, Tabela PE, Tabela AL, Tabela PB**.  \n"
@@ -264,6 +274,16 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                     st.session_state.pop("caches_warmed", None)
                     if clear_caches_fn:
                         clear_caches_fn()
+
+                    # Persiste no Supabase Storage para sobreviver a restarts do container
+                    try:
+                        from db_supabase import upload_excel_storage
+                        with st.spinner("☁️ Salvando Excel no Supabase Storage..."):
+                            ok = upload_excel_storage(uploaded.getvalue(), uploaded.name)
+                        if ok:
+                            st.info("☁️ Excel salvo no Storage — persistirá após reinício do servidor.")
+                    except Exception:
+                        pass
                     from datetime import datetime
 
                     # Importa catálogo para o Supabase em background
@@ -284,8 +304,11 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                             )
                         except Exception as e:
                             st.warning(f"⚠️ Falha ao enviar catálogo ao Supabase: {e}. App usará Excel local.")
-                            set_config("ultima_importacao", datetime.now().strftime("%d/%m/%Y %H:%M"))
-                            set_config("excel_nome", uploaded.name)
+
+                    # Registra data/nome da importação (sempre, independente do resultado acima)
+                    _agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    set_config("ultima_importacao", _agora)
+                    set_config("excel_nome", uploaded.name)
 
                     registrar_auditoria(u.get("usuario",""), "IMPORTACAO", uploaded.name)
                     # Limpa cache para forçar recarga do Supabase
@@ -297,14 +320,9 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                 dest.unlink(missing_ok=True)
                 st.error(f"Erro ao ler o arquivo: {e}")
 
-        ultima = get_config("ultima_importacao", "")
-        nome   = get_config("excel_nome", "")
-        if ultima:
-            st.info(f"**Última importação:** {ultima}  |  **Arquivo:** {nome or '—'}")
-
         src = st.session_state.get(excel_source_key, "")
         if src and Path(src).exists():
-            st.caption(f"📄 Tabela ativa: `{Path(src).name}`")
+            st.caption(f"📄 Tabela ativa em uso: `{Path(src).name}`")
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABA 5 — AUDITORIA

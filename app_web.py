@@ -62,7 +62,19 @@ if "excel_source" not in st.session_state:
     elif DEFAULT_EXCEL.exists():
         st.session_state.excel_source = str(DEFAULT_EXCEL)
     else:
-        st.session_state.excel_source = None
+        # Tenta baixar do Supabase Storage (versão importada pelo admin)
+        _excel_path = None
+        try:
+            from db_supabase import download_excel_storage
+            _data, _fname = download_excel_storage()
+            if _data and _fname:
+                import tempfile, os as _os
+                _dest = Path(tempfile.gettempdir()) / _fname
+                _dest.write_bytes(_data)
+                _excel_path = str(_dest)
+        except Exception:
+            pass
+        st.session_state.excel_source = _excel_path
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FUNÇÕES DE CACHE (idênticas ao app original — preservam todo o histórico)
