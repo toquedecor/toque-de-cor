@@ -2,8 +2,13 @@ name: Sync CITEL → Supabase
 
 on:
   schedule:
-    - cron: "0 6 * * *"   # 06:00 UTC diariamente (03:00 BRT)
-  workflow_dispatch:        # permite rodar manualmente a qualquer hora
+    - cron: "0 * * * *"   # a cada hora (detecta mudanças na CADITE automaticamente)
+  workflow_dispatch:        # disparo manual ou via importação de planilha no app
+    inputs:
+      force:
+        description: "Forçar sync mesmo sem alterações na CADITE"
+        required: false
+        default: "false"
 
 jobs:
   sync:
@@ -29,4 +34,5 @@ jobs:
           MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
           SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
+          SYNC_FORCE:     ${{ github.event.inputs.force || 'false' }}
         run: python sync_citel_supabase.py

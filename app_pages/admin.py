@@ -314,6 +314,18 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                     # Limpa cache para forçar recarga do Supabase
                     if clear_caches_fn:
                         clear_caches_fn()
+
+                    # Dispara sync CITEL → Supabase imediatamente via GitHub Actions
+                    try:
+                        from db_supabase import dispatch_citel_sync
+                        ok_d, msg_d = dispatch_citel_sync(force=True)
+                        if ok_d:
+                            st.info("🔄 Sync CITEL disparado — dados atualizados em ~1 minuto.")
+                        else:
+                            st.caption(f"ℹ️ Sync CITEL automático indisponível: {msg_d}")
+                    except Exception:
+                        pass
+
                     st.toast("Tabela atualizada!", icon="🎨")
                     st.rerun()
             except Exception as e:

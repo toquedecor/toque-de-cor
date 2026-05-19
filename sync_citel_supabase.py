@@ -4,13 +4,16 @@ sync_citel_supabase.py — Toque de Cor
 Sincroniza CADITE + CADMAR + CADGRU do MySQL CITEL para a tabela
 citel_itens no Supabase.
 
-Executado automaticamente pelo GitHub Actions diariamente às 06:00 UTC.
-Pode ser rodado manualmente: python sync_citel_supabase.py
+Executado automaticamente pelo GitHub Actions a cada hora.
+Detecta alterações na CADITE antes de sincronizar (skip se sem mudanças).
+Força sync completo quando SYNC_FORCE=true (disparado pelo admin na importação).
+
+Uso manual: python sync_citel_supabase.py [--force]
 """
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pymysql
 import pymysql.cursors
@@ -20,6 +23,7 @@ from supabase import create_client
 load_dotenv()
 
 BATCH = 500   # linhas por upsert no Supabase
+MAX_HORAS_SEM_SYNC = 12  # força sync mesmo sem mudanças se passou X horas
 
 # ── Conexão MySQL CITEL ───────────────────────────────────────────────────────
 def _citel_conn():
@@ -105,11 +109,81 @@ def _remove_obsoletos(sb, skus_citel: set) -> int:
     return removidos
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-def main():
-    print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Iniciando sync CITEL → Supabase...")
+# ── Detecção de mudanças ──────────────────────────────────────────────────────
+_FP_KEY      = "citel_fingerprint"
+_TS_KEY      = "citel_ultimo_sync"
+_CONFIG_TBL  = "config"
 
-    # 1. Busca dados do CITEL
+
+def _fingerprint_citel() -> str:
+    """Retorna fingerprint leve do CADITE: 'count|max_codfab'."""
+    conn = _citel_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt, MAX(CAST(ITE_CODFAB AS CHAR)) AS max_fab FROM CADITE"
+            )
+            r = cur.fetchone()
+        return f"{r['cnt']}|{r['max_fab']}"
+    finally:
+        conn.close()
+
+
+def _get_config(sb, chave: str) -> str:
+    r = sb.table(_CONFIG_TBL).select("valor").eq("chave", chave).execute()
+    return (r.data[0]["valor"] if r.data else "") or ""
+
+
+def _set_config(sb, chave: str, valor: str) -> None:
+    sb.table(_CONFIG_TBL).upsert({"chave": chave, "valor": valor}).execute()
+
+
+def _precisa_sincronizar(sb, force: bool) -> tuple[bool, str]:
+    """Retorna (True, motivo) se o sync deve rodar."""
+    if force:
+        return True, "forçado pela importação de planilha"
+
+    # Verifica última execução (segurança: sincroniza sempre após MAX_HORAS_SEM_SYNC)
+    ultimo_ts = _get_config(sb, _TS_KEY)
+    if ultimo_ts:
+        try:
+            dt_ult = datetime.fromisoformat(ultimo_ts)
+            if datetime.now(timezone.utc) - dt_ult > timedelta(hours=MAX_HORAS_SEM_SYNC):
+                return True, f"mais de {MAX_HORAS_SEM_SYNC}h desde o último sync"
+        except ValueError:
+            pass
+
+    # Compara fingerprint do CADITE com o último sync
+    print("  Verificando mudanças no CADITE...")
+    try:
+        fp_atual = _fingerprint_citel()
+    except Exception as e:
+        return False, f"ERRO ao checar fingerprint: {e}"
+
+    fp_salvo = _get_config(sb, _FP_KEY)
+    if fp_atual != fp_salvo:
+        return True, f"CADITE alterado  ({fp_salvo or 'sem registro'} → {fp_atual})"
+
+    return False, f"CADITE sem mudanças ({fp_atual})"
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main(force: bool = False):
+    print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Verificando CITEL → Supabase...")
+
+    # 1. Conecta ao Supabase
+    sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+    # 2. Decide se precisa sincronizar
+    deve, motivo = _precisa_sincronizar(sb, force)
+    if not deve:
+        print(f"  ⏭  Nada a fazer — {motivo}.")
+        print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Concluído sem alterações.")
+        return
+
+    print(f"  ▶  Sincronizando — {motivo}.")
+
+    # 3. Busca dados do CITEL
     print("  Conectando ao MySQL CITEL...")
     try:
         rows = _fetch_citel()
@@ -118,27 +192,31 @@ def main():
         sys.exit(1)
     print(f"  {len(rows)} registros encontrados no CITEL.")
 
-    # 2. Conecta ao Supabase
-    sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-
-    # 3. Garante que a tabela existe
+    # 4. Garante que a tabela existe
     try:
         sb.table("citel_itens").select("cod_fab").limit(1).execute()
     except Exception:
         print("  Tabela citel_itens não encontrada — crie-a no Supabase primeiro.")
         sys.exit(1)
 
-    # 4. Upsert
+    # 5. Upsert
     print(f"  Enviando para Supabase (lotes de {BATCH})...")
     _upsert_supabase(sb, list(rows))
 
-    # 5. Remove obsoletos
+    # 6. Remove obsoletos
     skus_citel = {str(r["cod_fab"]).strip() for r in rows}
     removidos = _remove_obsoletos(sb, skus_citel)
 
-    print(f"  Sync concluído: {len(rows)} upserts, {removidos} removidos.")
+    # 7. Salva fingerprint e timestamp do sync
+    fp_novo = _fingerprint_citel()
+    _set_config(sb, _FP_KEY, fp_novo)
+    _set_config(sb, _TS_KEY, datetime.now(timezone.utc).isoformat())
+
+    n_dedup = len({str(r["cod_fab"]).strip() for r in rows})
+    print(f"  Sync concluído: {n_dedup} upserts, {removidos} removidos.")
     print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Pronto!")
 
 
 if __name__ == "__main__":
-    main()
+    _force = "--force" in sys.argv or os.environ.get("SYNC_FORCE", "").lower() == "true"
+    main(force=_force)

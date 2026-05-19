@@ -540,3 +540,39 @@ def get_citel_itens() -> "pd.DataFrame":
     for col in ("COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"):
         df[col] = df[col].fillna("").astype(str)
     return df
+
+
+# ── Disparo do GitHub Actions sync_citel.yml ─────────────────────────────────
+def dispatch_citel_sync(force: bool = False) -> tuple[bool, str]:
+    """
+    Dispara o workflow sync_citel.yml via GitHub Actions API.
+    Requer a secret GITHUB_DISPATCH_TOKEN com permissão actions:write.
+    Quando force=True passa SYNC_FORCE=true para pular a detecção de mudanças.
+    """
+    import os
+    import requests
+
+    token = os.environ.get("GITHUB_DISPATCH_TOKEN", "")
+    if not token:
+        return False, "GITHUB_DISPATCH_TOKEN não configurado"
+
+    payload: dict = {"ref": "main"}
+    if force:
+        payload["inputs"] = {"force": "true"}
+
+    try:
+        r = requests.post(
+            "https://api.github.com/repos/toquedecor/toque-de-cor/actions/workflows/sync_citel.yml/dispatches",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+            json=payload,
+            timeout=10,
+        )
+    except Exception as e:
+        return False, f"Erro de rede: {e}"
+
+    if r.status_code == 204:
+        return True, "Sync CITEL disparado com sucesso"
+    return False, f"GitHub retornou {r.status_code}"
