@@ -7,13 +7,18 @@ Otimizações de performance:
   3. Cache incremental: consulta o BD apenas para SKUs ausentes no cache existente
 """
 
-import mysql.connector
 import pandas as pd
 import pickle
 import os as _os
 import streamlit as st
 from pathlib import Path
 from datetime import datetime
+
+try:
+    import mysql.connector
+    _MYSQL_OK = True
+except Exception:
+    _MYSQL_OK = False
 
 _DB_CONFIG = {
     "host":               _os.environ.get("MYSQL_HOST",     ""),
@@ -40,6 +45,8 @@ def _get_conn():
     Conexão MySQL mantida viva entre reruns pelo st.cache_resource.
     Elimina o custo de handshake TCP+auth a cada render.
     """
+    if not _MYSQL_OK:
+        raise RuntimeError("mysql-connector-python não está disponível")
     return mysql.connector.connect(**_DB_CONFIG)
 
 
@@ -125,6 +132,8 @@ def _fetch(skus_list: list) -> pd.DataFrame:
 # ── API pública ────────────────────────────────────────────────────────────────
 def test_connection() -> tuple:
     """Testa a conexão com o BD. Retorna (bool, mensagem)."""
+    if not _MYSQL_OK:
+        return False, "mysql-connector-python não instalado"
     try:
         conn = _get_conn()
         if not conn.is_connected():
