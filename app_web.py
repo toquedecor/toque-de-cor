@@ -58,23 +58,29 @@ DEFAULT_EXCEL = BASE_DIR / "Tabela SW Suvinil Geral.xlsx"
 if "excel_source" not in st.session_state:
     src_salvo = get_config("excel_path", "")
     if src_salvo and Path(src_salvo).exists():
+        # Caminho explícito salvo no banco → usa direto
         st.session_state.excel_source = src_salvo
-    elif DEFAULT_EXCEL.exists():
-        st.session_state.excel_source = str(DEFAULT_EXCEL)
     else:
-        # Tenta baixar do Supabase Storage (versão importada pelo admin)
+        # Prioridade: Supabase Storage (arquivo importado pelo admin) > DEFAULT_EXCEL
+        # DEFAULT_EXCEL está no Docker mas pode estar desatualizado.
         _excel_path = None
         try:
             from db_supabase import download_excel_storage
             _data, _fname = download_excel_storage()
             if _data and _fname:
-                import tempfile, os as _os
+                import tempfile
                 _dest = Path(tempfile.gettempdir()) / _fname
                 _dest.write_bytes(_data)
                 _excel_path = str(_dest)
         except Exception:
             pass
-        st.session_state.excel_source = _excel_path
+
+        if _excel_path:
+            st.session_state.excel_source = _excel_path
+        elif DEFAULT_EXCEL.exists():
+            st.session_state.excel_source = str(DEFAULT_EXCEL)
+        else:
+            st.session_state.excel_source = None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FUNÇÕES DE CACHE (idênticas ao app original — preservam todo o histórico)
