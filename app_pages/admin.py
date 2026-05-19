@@ -268,17 +268,23 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
             uploaded = st.file_uploader("Selecionar arquivo Excel (.xlsx)", type=["xlsx"])
             if uploaded:
                 import tempfile
+                _prog = st.progress(0, text="📂 Recebendo arquivo...")
+                raw = uploaded.getvalue()
+                _prog.progress(25, text="💾 Salvando arquivo temporário...")
                 dest = Path(tempfile.gettempdir()) / uploaded.name
-                dest.write_bytes(uploaded.getvalue())
+                dest.write_bytes(raw)
+                _prog.progress(55, text="🔍 Validando estrutura da planilha...")
                 try:
                     test = pd.read_excel(str(dest), sheet_name="Tabela RN", header=0)
-                    st.info(f"✅ **{uploaded.name}** — {len(test)} linhas na aba Tabela RN. Clique em **Ativar** para confirmar.")
+                    _prog.progress(90, text="⚙️ Preparando ativação...")
+                    _prog.progress(100, text="✅ Arquivo validado e pronto para ativar!")
                     # Armazena e troca para Fase 2
-                    st.session_state[_PEND_BYTES] = uploaded.getvalue()
+                    st.session_state[_PEND_BYTES] = raw
                     st.session_state[_PEND_NAME]  = uploaded.name
                     st.rerun()
                 except Exception as e:
                     dest.unlink(missing_ok=True)
+                    _prog.empty()
                     st.error(f"Erro ao ler o arquivo: {e}")
         else:
             # ── FASE 2: Arquivo validado — aguardando confirmação ───────────
