@@ -1,0 +1,9 @@
+@echo off
+SET MYSQL_HOST=SRVORACLEBR18.CITELSOFTWARE.COM.BR
+SET MYSQL_PORT=61670
+SET MYSQL_USER=converte_toquedecor
+SET MYSQL_PASSWORD=converte13347
+SET MYSQL_DATABASE=AUTCOM
+SET SUPABASE_URL=https://hevhowwfweobmihzvenf.supabase.co
+SET SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhldmhvd3dmd2VvYm1paHp2ZW5mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxNDc3ODUsImV4cCI6MjA5NDcyMzc4NX0.DNFSm2ZK1mimRPR_rxc48JJRNr8CSSw3jAtKQcCXtpY
+python "C:\Users\rafael.melzi\Desktop\projeto_planilha_toque_cor\sync_citel_supabase.py" >> "C:\Users\rafael.melzi\Desktop\projeto_planilha_toque_cor\sync_citel.log" 2>&1

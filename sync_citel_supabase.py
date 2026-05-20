@@ -116,15 +116,30 @@ _CONFIG_TBL  = "configuracoes"
 
 
 def _fingerprint_citel() -> str:
-    """Retorna fingerprint leve do CADITE: 'count|max_codfab'."""
+    """
+    Fingerprint do CADITE que detecta:
+    - Novos produtos (COUNT)
+    - Produtos removidos (COUNT)
+    - Alteracoes em descricao, marca ou grupo (checksum via SUM+LENGTH)
+    """
     conn = _citel_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) AS cnt, MAX(CAST(ITE_CODFAB AS CHAR)) AS max_fab FROM CADITE"
-            )
+            cur.execute("""
+                SELECT
+                    COUNT(*)                                        AS cnt,
+                    MAX(CAST(ITE_CODFAB AS CHAR))                   AS max_fab,
+                    SUM(LENGTH(COALESCE(ITE_DESITE, '')))           AS sum_desc,
+                    SUM(LENGTH(COALESCE(
+                        (SELECT MAR_DESMAR FROM CADMAR WHERE MAR_CODMAR = c.ITE_CODMAR), ''
+                    )))                                             AS sum_mar,
+                    SUM(LENGTH(COALESCE(
+                        (SELECT GRU_DESGRU FROM CADGRU WHERE GRU_CODGRU = c.ITE_CODGRU), ''
+                    )))                                             AS sum_gru
+                FROM CADITE c
+            """)
             r = cur.fetchone()
-        return f"{r['cnt']}|{r['max_fab']}"
+        return f"{r['cnt']}|{r['max_fab']}|{r['sum_desc']}|{r['sum_mar']}|{r['sum_gru']}"
     finally:
         conn.close()
 
@@ -174,7 +189,7 @@ def main(force: bool = False) -> tuple[bool, str]:
     Retorna (sucesso: bool, mensagem: str).
     Pode ser chamado inline (ex: do admin.py) sem risco de sys.exit().
     """
-    print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Verificando CITEL → Supabase...")
+    print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Verificando CITEL -> Supabase...")
 
     # 1. Conecta ao Supabase
     try:
@@ -185,11 +200,11 @@ def main(force: bool = False) -> tuple[bool, str]:
     # 2. Decide se precisa sincronizar
     deve, motivo = _precisa_sincronizar(sb, force)
     if not deve:
-        print(f"  ⏭  Nada a fazer — {motivo}.")
-        print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Concluído sem alterações.")
-        return True, f"Sem alterações — {motivo}"
+        print(f"  >>  Nada a fazer -- {motivo}.")
+        print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Concluido sem alteracoes.")
+        return True, f"Sem alteracoes -- {motivo}"
 
-    print(f"  ▶  Sincronizando — {motivo}.")
+    print(f"  >  Sincronizando -- {motivo}.")
 
     # 3. Busca dados do CITEL
     print("  Conectando ao MySQL CITEL...")
@@ -223,9 +238,10 @@ def main(force: bool = False) -> tuple[bool, str]:
 
     n_dedup = len({str(r["cod_fab"]).strip() for r in rows})
     resumo = f"{n_dedup} produtos sincronizados, {removidos} removidos"
-    print(f"  Sync concluído: {resumo}.")
+    print(f"  Sync concluido: {resumo}.")
     print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Pronto!")
     return True, resumo
+
 
 
 if __name__ == "__main__":
