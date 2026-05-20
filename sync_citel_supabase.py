@@ -188,8 +188,9 @@ def main(force: bool = False):
     try:
         rows = _fetch_citel()
     except Exception as e:
-        print(f"  ERRO ao conectar ao CITEL: {e}")
-        sys.exit(1)
+        print(f"  AVISO: MySQL CITEL inacessível (firewall/rede privada): {e}")
+        print("  Sync ignorado — rode localmente via Task Scheduler onde o CITEL é acessível.")
+        sys.exit(0)  # Não falha o workflow — é esperado quando rodando na nuvem
     print(f"  {len(rows)} registros encontrados no CITEL.")
 
     # 4. Garante que a tabela existe

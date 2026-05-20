@@ -1,8 +1,12 @@
 name: Sync CITEL → Supabase
 
+# NOTA: O MySQL CITEL está em rede privada (firewall) e não é acessível
+# a partir de runners na nuvem. O sync real acontece localmente via
+# Windows Task Scheduler (agendar_sync_citel.ps1).
+# Este workflow só é útil para testes manuais (workflow_dispatch).
 on:
-  schedule:
-    - cron: "0 * * * *"   # a cada hora (detecta mudanças na CADITE automaticamente)
+  # schedule desabilitado — sempre falharia por firewall
+  # - cron: "0 * * * *"
   workflow_dispatch:        # disparo manual ou via importação de planilha no app
     inputs:
       force:
