@@ -39,8 +39,8 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
 
     st.markdown("## ⚙️ Painel Administrativo")
 
-    t_usr, t_perfis, t_cfg, t_imp, t_aud = st.tabs(
-        ["👥 Usuários", "🔐 Perfis & Permissões", "📧 Configurações", "📥 Importar Planilha", "📋 Auditoria"]
+    t_usr, t_perfis, t_cfg, t_imp, t_aud, t_diag = st.tabs(
+        ["👥 Usuários", "🔐 Perfis & Permissões", "📧 Configurações", "📥 Importar Planilha", "📋 Auditoria", "🔌 Diagnóstico"]
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -571,3 +571,65 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
             st.dataframe(df_log, hide_index=True, use_container_width=True)
         else:
             st.info("Nenhum registro de auditoria ainda.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ABA 6 — DIAGNÓSTICO DE CONECTIVIDADE CITEL
+    # ══════════════════════════════════════════════════════════════════════════
+    with t_diag:
+        st.markdown("### 🔌 Diagnóstico de Conectividade CITEL")
+        st.caption("Verifica se este ambiente consegue acessar o MySQL CITEL diretamente.")
+
+        _CITEL_HOST = "SRVORACLEBR18.CITELSOFTWARE.COM.BR"
+        _CITEL_PORT = 61670
+
+        if st.button("▶ Testar conexão com CITEL agora", type="primary"):
+            import socket, time as _time
+            _res = []
+
+            # 1. DNS
+            with st.spinner("Resolvendo DNS..."):
+                try:
+                    _ip = socket.gethostbyname(_CITEL_HOST)
+                    _res.append(("✅ DNS", f"{_CITEL_HOST} → {_ip}"))
+                except Exception as _e:
+                    _res.append(("❌ DNS", str(_e)))
+                    st.error(f"DNS falhou: {_e}")
+                    st.stop()
+
+            # 2. TCP
+            with st.spinner("Testando porta TCP..."):
+                _t0 = _time.time()
+                try:
+                    _s = socket.create_connection((_CITEL_HOST, _CITEL_PORT), timeout=10)
+                    _s.close()
+                    _res.append(("✅ TCP", f"Porta {_CITEL_PORT} aberta em {_time.time()-_t0:.1f}s"))
+                except Exception as _e:
+                    _res.append(("❌ TCP", f"Timeout/bloqueado em {_time.time()-_t0:.1f}s: {_e}"))
+
+            # 3. MySQL
+            _tcp_ok = _res[-1][0].startswith("✅")
+            if _tcp_ok:
+                with st.spinner("Conectando ao MySQL..."):
+                    try:
+                        import pymysql
+                        _conn = pymysql.connect(
+                            host=_CITEL_HOST, port=_CITEL_PORT,
+                            user="converte_toquedecor", password="converte13347",
+                            database="AUTCOM", connect_timeout=15,
+                        )
+                        with _conn.cursor() as _cur:
+                            _cur.execute("SELECT COUNT(*) FROM CADITE")
+                            _cnt = _cur.fetchone()[0]
+                        _conn.close()
+                        _res.append(("✅ MySQL", f"Conectado! CADITE tem {_cnt} registros."))
+                    except Exception as _e:
+                        _res.append(("❌ MySQL", str(_e)))
+
+            # Exibe resultado
+            for _status, _detail in _res:
+                st.markdown(f"**{_status}** — {_detail}")
+
+            if all(r[0].startswith("✅") for r in _res):
+                st.success("🎉 Este ambiente acessa o CITEL! O sync automático pode rodar aqui.")
+            else:
+                st.warning("⚠️ Este ambiente NÃO acessa o CITEL (IP bloqueado). Sync deve ser feito localmente.")
