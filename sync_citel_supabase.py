@@ -168,18 +168,26 @@ def _precisa_sincronizar(sb, force: bool) -> tuple[bool, str]:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-def main(force: bool = False):
+def main(force: bool = False) -> tuple[bool, str]:
+    """
+    Executa o sync CITEL → Supabase.
+    Retorna (sucesso: bool, mensagem: str).
+    Pode ser chamado inline (ex: do admin.py) sem risco de sys.exit().
+    """
     print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Verificando CITEL → Supabase...")
 
     # 1. Conecta ao Supabase
-    sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    try:
+        sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    except Exception as e:
+        return False, f"Supabase indisponível: {e}"
 
     # 2. Decide se precisa sincronizar
     deve, motivo = _precisa_sincronizar(sb, force)
     if not deve:
         print(f"  ⏭  Nada a fazer — {motivo}.")
         print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Concluído sem alterações.")
-        return
+        return True, f"Sem alterações — {motivo}"
 
     print(f"  ▶  Sincronizando — {motivo}.")
 
@@ -188,17 +196,17 @@ def main(force: bool = False):
     try:
         rows = _fetch_citel()
     except Exception as e:
-        print(f"  AVISO: MySQL CITEL inacessível (firewall/rede privada): {e}")
-        print("  Sync ignorado — rode localmente via Task Scheduler onde o CITEL é acessível.")
-        sys.exit(0)  # Não falha o workflow — é esperado quando rodando na nuvem
+        msg = f"MySQL CITEL inacessível: {e}"
+        print(f"  AVISO: {msg}")
+        print("  Sync ignorado — execute localmente onde o CITEL é acessível.")
+        return False, msg
     print(f"  {len(rows)} registros encontrados no CITEL.")
 
     # 4. Garante que a tabela existe
     try:
         sb.table("citel_itens").select("cod_fab").limit(1).execute()
-    except Exception:
-        print("  Tabela citel_itens não encontrada — crie-a no Supabase primeiro.")
-        sys.exit(1)
+    except Exception as e:
+        return False, f"Tabela citel_itens não encontrada no Supabase: {e}"
 
     # 5. Upsert
     print(f"  Enviando para Supabase (lotes de {BATCH})...")
@@ -214,10 +222,13 @@ def main(force: bool = False):
     _set_config(sb, _TS_KEY, datetime.now(timezone.utc).isoformat())
 
     n_dedup = len({str(r["cod_fab"]).strip() for r in rows})
-    print(f"  Sync concluído: {n_dedup} upserts, {removidos} removidos.")
+    resumo = f"{n_dedup} produtos sincronizados, {removidos} removidos"
+    print(f"  Sync concluído: {resumo}.")
     print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Pronto!")
+    return True, resumo
 
 
 if __name__ == "__main__":
     _force = "--force" in sys.argv or os.environ.get("SYNC_FORCE", "").lower() == "true"
-    main(force=_force)
+    ok, msg = main(force=_force)
+    sys.exit(0 if ok else 1)

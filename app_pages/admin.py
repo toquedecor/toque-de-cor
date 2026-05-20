@@ -378,16 +378,17 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                     except Exception:
                         pass
 
-                    # Dispara sync CITEL
+                    # Sync CITEL inline (funciona quando MySQL acessível — local ou rede da empresa)
                     try:
-                        from db_supabase import dispatch_citel_sync
-                        ok_d, msg_d = dispatch_citel_sync(force=True)
-                        if ok_d:
-                            st.info("🔄 Sync CITEL disparado — dados atualizados em ~1 minuto.")
+                        import sync_citel_supabase as _scs
+                        with st.spinner("🔄 Sincronizando catálogo CITEL → Supabase..."):
+                            _ok_s, _msg_s = _scs.main(force=True)
+                        if _ok_s:
+                            st.success(f"✅ CITEL sincronizado — {_msg_s}")
                         else:
-                            st.caption(f"ℹ️ Sync CITEL automático indisponível: {msg_d}")
-                    except Exception:
-                        pass
+                            st.caption(f"ℹ️ Sync CITEL indisponível neste ambiente: {_msg_s}")
+                    except Exception as _e_scs:
+                        st.caption(f"ℹ️ Sync CITEL não executado: {_e_scs}")
 
                     st.toast("Tabela atualizada!", icon="🎨")
                     st.session_state[_IMPORT_DONE] = True
