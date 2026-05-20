@@ -23,7 +23,7 @@ jobs:
           python-version: "3.11"
 
       - name: Instalar dependências
-        run: pip install PyMySQL supabase python-dotenv
+        run: pip install --no-cache-dir "PyMySQL>=1.1.0" "supabase>=2.0.0" "python-dotenv>=1.0.0"
 
       - name: Executar sync CITEL → Supabase
         env:
