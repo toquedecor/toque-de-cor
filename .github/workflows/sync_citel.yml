@@ -1,13 +1,9 @@
 name: Sync CITEL → Supabase
 
-# NOTA: O MySQL CITEL está em rede privada (firewall) e não é acessível
-# a partir de runners na nuvem. O sync real acontece localmente via
-# Windows Task Scheduler (agendar_sync_citel.ps1).
-# Este workflow só é útil para testes manuais (workflow_dispatch).
 on:
-  # schedule desabilitado — sempre falharia por firewall
-  # - cron: "0 * * * *"
-  workflow_dispatch:        # disparo manual ou via importação de planilha no app
+  schedule:
+    - cron: "0 * * * *"   # a cada hora
+  workflow_dispatch:
     inputs:
       force:
         description: "Forçar sync mesmo sem alterações na CADITE"
@@ -27,6 +23,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Diagnóstico de rede (IP do runner + teste TCP no CITEL)
+        run: |
+          echo "=== IP público deste runner ==="
+          curl -s https://api.ipify.org && echo ""
+          echo "=== DNS do servidor CITEL ==="
+          nslookup ${{ secrets.MYSQL_HOST }} || true
+          echo "=== Teste TCP porta ${{ secrets.MYSQL_PORT }} (timeout 10s) ==="
+          timeout 10 bash -c "echo > /dev/tcp/${{ secrets.MYSQL_HOST }}/${{ secrets.MYSQL_PORT }}" \
+            && echo "PORTA ABERTA ✅" \
+            || echo "PORTA FECHADA / TIMEOUT ❌"
 
       - name: Instalar dependências
         run: pip install --no-cache-dir "PyMySQL>=1.1.0" "supabase>=2.0.0" "python-dotenv>=1.0.0"

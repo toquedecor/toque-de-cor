@@ -33,7 +33,7 @@ def _citel_conn():
         password=os.environ["MYSQL_PASSWORD"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
         database=os.environ["MYSQL_DATABASE"],
-        connect_timeout=15,
+        connect_timeout=30,
         cursorclass=pymysql.cursors.DictCursor,
     )
 
