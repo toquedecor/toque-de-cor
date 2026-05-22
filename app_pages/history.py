@@ -6,11 +6,15 @@ Supervisor → vê pedidos da sua loja; pode aprovar pendentes
 Admin     → vê todos os pedidos; pode aprovar e reenviar e-mail
 """
 
+import base64
 import pandas as pd
 import streamlit as st
-from datetime import datetime
+import streamlit.components.v1 as _components
+from datetime import datetime, timezone, timedelta
 
 import auth
+
+_BR_TZ = timezone(timedelta(hours=-3))  # Horaário de Brasília (UTC-3)
 from db_supabase import (
     listar_pedidos,
     buscar_pedido_completo,
@@ -26,7 +30,34 @@ from orders import (
     exportar_excel_completo,
     exportar_excel_citel,
     enviar_email_pedido,
+    _classifica_marca,
 )
+
+def _btn_multi_download(label: str, arquivos: list[tuple[bytes, str]], key: str) -> None:
+    """
+    Botão que dispara o download de múltiplos arquivos .xlsx via JavaScript,
+    sem ZIP e sem botões extras — um clique, todos os arquivos separados.
+    """
+    trigger = f"_dl_trig_{key}"
+    if st.button(label, use_container_width=True, key=f"btn_{key}"):
+        st.session_state[trigger] = True
+    if st.session_state.pop(trigger, False):
+        partes = []
+        for conteudo, nome in arquivos:
+            b64 = base64.b64encode(conteudo).decode()
+            partes.append(f'["{nome}","{b64}"]')
+        js = (
+            "<script>[" + ",".join(partes) + "].forEach(function(f,i){"
+            "setTimeout(function(){"
+            "var a=document.createElement('a');"
+            "a.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,'+f[1];"
+            "a.download=f[0];"
+            "document.body.appendChild(a);a.click();document.body.removeChild(a);"
+            "},i*600);});"  # 600ms de intervalo para o browser não bloquear
+            "</script>"
+        )
+        _components.html(js, height=0)
+
 
 STATUS_LABEL = {
     "pendente": "🟡 Pendente",
@@ -39,7 +70,7 @@ STATUS_LABEL = {
 def render():
     u       = auth.usuario_atual()
     perfil  = u.get("perfil", "vendedor")
-    usuario = u.get("usuario", "")
+    usuario = u.get("nome", u.get("usuario", ""))
     loja    = u.get("loja", "")
 
     ver_preco   = auth.tem_permissao("ver_precos")
@@ -75,6 +106,9 @@ def render():
         m4.metric("Data", _fmt_data(ped.get("criado_em", "")))
         if ver_preco:
             tg = float(ped.get("total_geral", 0))
+            # Pedidos antigos de vendedor podem ter total_geral=0 → recalcula dos itens
+            if tg == 0 and itens:
+                tg = sum(float(it.get("preco_unit", 0)) * int(it.get("qtd", 0)) for it in itens)
             tg_fmt = f"R$ {tg:,.2f}".replace(",","X").replace(".",",").replace("X",".")
             m5.metric("Total", tg_fmt)
 
@@ -209,7 +243,7 @@ def render():
 
         # ── Ações no pedido ───────────────────────────────────────────────────
         status_atual = ped.get("status", "pendente")
-        data_str     = datetime.now().strftime("%d-%m-%Y")
+        data_str     = datetime.now(_BR_TZ).strftime("%d-%m-%Y")
 
         btn_cols = st.columns(5)
 
@@ -228,8 +262,8 @@ def render():
                         st.warning(f"E-mail: {msg_mail}")
                     st.rerun()
 
-        # Reenviar e-mail (admin)
-        if perfil == "admin":
+        # Reenviar e-mail (somente após aprovado/enviado)
+        if auth.tem_permissao("reenviar_pedido") and status_atual in ("aprovado", "enviado"):
             with btn_cols[1]:
                 if st.button("📧 Reenviar E-mail", use_container_width=True):
                     ok_mail, msg_mail = enviar_email_pedido(
@@ -261,26 +295,57 @@ def render():
                     st.session_state[f"edit_ped_{pid}"] = True
                     st.rerun()
 
-        # Downloads Excel
+        # Downloads Excel — 2 botões, cada um dispara múltiplos arquivos separados por marca
+        _itens_suv = [it for it in itens if _classifica_marca(it.get("marca", "")) == "suvinil"]
+        _itens_sw  = [it for it in itens if _classifica_marca(it.get("marca", "")) == "sw"]
+        _data_str  = datetime.now(_BR_TZ).strftime("%d-%m-%Y")
+        _loja_str  = ped.get("loja", "")
+        _uf_str    = ped.get("uf", "")
+
         _dl1, _dl2 = st.columns(2)
         with _dl1:
-            xls_all = exportar_excel_completo(itens, mostrar_precos=ver_preco, pedido=ped)
-            st.download_button(
-                "📥 Excel Completo",
-                data=xls_all,
-                file_name=f"Pedido_{num:04d}_{ped.get('loja','')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+            _arqs_excel = []
+            if _itens_suv:
+                _arqs_excel.append((
+                    exportar_excel_suvinil(itens, pedido=ped),
+                    f"Pedido_Suvinil_{_uf_str}_{_loja_str}_{_data_str}.xlsx",
+                ))
+            if _itens_sw:
+                _arqs_excel.append((
+                    exportar_excel_sw(itens, pedido=ped),
+                    f"Pedido_SW_{_uf_str}_{_loja_str}_{_data_str}.xlsx",
+                ))
+            if _arqs_excel:
+                _btn_multi_download(
+                    f"📥 Excel Completo ({len(_itens_suv + _itens_sw)})",
+                    _arqs_excel,
+                    key=f"excel_{pid}",
+                )
+            else:
+                st.button("📥 Excel Completo", disabled=True, use_container_width=True,
+                          key=f"excel_{pid}")
+
         with _dl2:
-            xls_citel = exportar_excel_citel(itens)
-            st.download_button(
-                "📥 Excel CITEL",
-                data=xls_citel,
-                file_name=f"Pedido_{num:04d}_CITEL_{ped.get('loja','')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+            _arqs_citel = []
+            if _itens_suv:
+                _arqs_citel.append((
+                    exportar_excel_citel(_itens_suv),
+                    f"Importacao_Citel_Suvinil_{_uf_str}_{_loja_str}_{_data_str}.xlsx",
+                ))
+            if _itens_sw:
+                _arqs_citel.append((
+                    exportar_excel_citel(_itens_sw),
+                    f"Importacao_Citel_SW_{_uf_str}_{_loja_str}_{_data_str}.xlsx",
+                ))
+            if _arqs_citel:
+                _btn_multi_download(
+                    f"📥 Excel CITEL ({len(_itens_suv + _itens_sw)})",
+                    _arqs_citel,
+                    key=f"citel_{pid}",
+                )
+            else:
+                st.button("📥 Excel CITEL", disabled=True, use_container_width=True,
+                          key=f"citel_{pid}")
 
         return  # não renderiza lista enquanto detalhe está aberto
 
@@ -304,10 +369,20 @@ def render():
             ufs_disp    = sorted({p.get("uf","") for p in pedidos})
             sel_uf_f    = st.selectbox("UF", ["Todas"] + ufs_disp)
 
+        fd1, fd2 = st.columns(2)
+        with fd1:
+            sel_data_ini = st.date_input("Data inicial", value=None, key="hist_data_ini")
+        with fd2:
+            sel_data_fim = st.date_input("Data final", value=None, key="hist_data_fim")
+
     filtrados = pedidos
     if sel_loja_f   != "Todas": filtrados = [p for p in filtrados if p.get("loja","")   == sel_loja_f]
     if sel_status_f != "Todos": filtrados = [p for p in filtrados if p.get("status","") == sel_status_f]
     if sel_uf_f     != "Todas": filtrados = [p for p in filtrados if p.get("uf","")     == sel_uf_f]
+    if sel_data_ini:
+        filtrados = [p for p in filtrados if _parse_date(p.get("criado_em","")) >= sel_data_ini]
+    if sel_data_fim:
+        filtrados = [p for p in filtrados if _parse_date(p.get("criado_em","")) <= sel_data_fim]
 
     st.caption(f"**{len(filtrados)}** pedido(s) encontrado(s)")
 
@@ -325,7 +400,10 @@ def render():
             tg_txt = ""
             if ver_preco:
                 tg = float(ped.get("total_geral", 0))
-                tg_txt = f" · R$ {tg:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+                if tg > 0:
+                    tg_txt = f" · R$ {tg:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+                else:
+                    tg_txt = " · —"
             st.markdown(
                 f"**#{num:04d}** &nbsp;{st_lb}&nbsp; · {data} · **{uf_}** · {loja_} · _{usr_}_{tg_txt}"
             )
@@ -339,12 +417,28 @@ def render():
 
 
 def _fmt_data(iso: str) -> str:
-    """Formata data ISO para dd/mm/yyyy HH:MM."""
+    """Formata data ISO (UTC) para dd/mm/yyyy HH:MM no fuso de Brasília."""
     try:
         if "T" in iso:
             dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            if dt.tzinfo:
+                dt = dt.astimezone(_BR_TZ)
         else:
             dt = datetime.fromisoformat(iso)
         return dt.strftime("%d/%m/%Y %H:%M")
     except Exception:
         return str(iso)[:16]
+
+
+def _parse_date(iso: str):
+    """Retorna objeto date a partir de string ISO no fuso BR, ou date.min em caso de erro."""
+    from datetime import date
+    try:
+        if "T" in iso:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            if dt.tzinfo:
+                dt = dt.astimezone(_BR_TZ)
+            return dt.date()
+        return datetime.fromisoformat(iso).date()
+    except Exception:
+        return date.min

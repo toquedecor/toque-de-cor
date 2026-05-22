@@ -12,6 +12,7 @@ Abas:
 import pandas as pd
 import streamlit as st
 from pathlib import Path
+from app_pages.catalog import STATES as _UF_STATES
 
 import auth
 from db_supabase import (
@@ -19,6 +20,7 @@ from db_supabase import (
     get_permissoes_perfil, set_permissoes_perfil,
     listar_auditoria, registrar_auditoria,
     get_supabase, supabase_ok,
+    get_codigo_usuario, set_codigo_usuario,
 )
 
 
@@ -51,8 +53,10 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
 
         usuarios = auth.listar_usuarios()
         if usuarios:
-            df_usr = pd.DataFrame(usuarios)[["usuario", "nome", "perfil", "loja", "ativo"]]
-            df_usr.columns = ["Login", "Nome", "Perfil", "Loja", "Ativo"]
+            _cols_disp = [c for c in ["nome", "perfil", "uf", "loja", "ativo"] if c in pd.DataFrame(usuarios).columns]
+            df_usr = pd.DataFrame(usuarios)[_cols_disp]
+            df_usr.columns = ["Nome", "Perfil", "UF", "Loja", "Ativo"][:len(_cols_disp)]
+            df_usr.insert(0, "Cód.", [get_codigo_usuario(u_["usuario"]) or "—" for u_ in usuarios])
             st.dataframe(df_usr, hide_index=True, use_container_width=True)
         else:
             st.info("Nenhum usuário cadastrado ainda.")
@@ -63,61 +67,146 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
         with st.form("form_novo_usuario"):
             c1, c2 = st.columns(2)
             with c1:
-                novo_login = st.text_input("Login", placeholder="fulano.silva")
-                novo_nome  = st.text_input("Nome completo")
-                novo_loja  = st.text_input("Loja")
+                novo_nome   = st.text_input("Nome completo")
+                novo_loja   = st.text_input("Loja")
+                novo_codigo = st.text_input(
+                    "Código do operador (3 dígitos)",
+                    max_chars=3,
+                    placeholder="001",
+                    help="Código numérico de 3 dígitos usado na tela de login.",
+                )
             with c2:
                 novo_perfil = st.selectbox(
                     "Perfil",
                     options=list(auth.PERFIS.keys()),
                     format_func=lambda x: auth.PERFIS[x],
                 )
+                novo_uf = st.selectbox(
+                    "UF (somente para Vendedor)",
+                    options=[""] + _UF_STATES,
+                    format_func=lambda x: "— Todas (Admin/Supervisor) —" if x == "" else x,
+                    help="Vendedor verá apenas os produtos da UF selecionada. Deixe em branco para Admin e Supervisor.",
+                )
                 novo_senha  = st.text_input("Senha", type="password")
                 novo_senha2 = st.text_input("Confirmar senha", type="password")
 
             if st.form_submit_button("➕ Criar Usuário", type="primary"):
-                if not novo_login or not novo_nome or not novo_senha:
+                if not novo_nome or not novo_senha:
                     st.error("Preencha todos os campos obrigatórios.")
                 elif novo_senha != novo_senha2:
                     st.error("As senhas não coincidem.")
+                elif novo_codigo and (not novo_codigo.isdigit() or len(novo_codigo) != 3):
+                    st.error("Código deve ter exatamente 3 dígitos numéricos.")
                 else:
-                    ok, msg = auth.criar_usuario(novo_login, novo_nome, novo_senha, novo_perfil, novo_loja)
+                    ok, msg = auth.criar_usuario(novo_nome, novo_senha, novo_perfil, novo_loja, novo_uf)
                     if ok:
+                        if novo_codigo:
+                            # Busca o login gerado para vincular o código
+                            _usr_criado = auth.buscar_usuario_por_nome(novo_nome)
+                            _login_gerado = _usr_criado.get("usuario", "") if _usr_criado else ""
+                            if _login_gerado:
+                                ok_c, msg_c = set_codigo_usuario(_login_gerado, novo_codigo)
+                                if not ok_c:
+                                    st.warning(f"Usuário criado, mas código não salvo: {msg_c}")
                         st.success(msg)
                         st.rerun()
                     else:
                         st.error(msg)
 
         st.divider()
-        st.markdown("### Alterar Senha / Ativar / Desativar / Excluir")
+        st.markdown("### Editar Usuário")
 
         logins = [u_["usuario"] for u_ in usuarios] if usuarios else []
         if logins:
+            # Seletor fora do form para pré-popular os campos ao trocar usuário
+            _ed_usr_key = "admin_edit_usr_sel"
+            sel_login = st.selectbox(
+                "Selecionar usuário",
+                logins,
+                key=_ed_usr_key,
+                format_func=lambda x: next((u_["nome"] for u_ in usuarios if u_["usuario"] == x), x),
+            )
+
+            # Dados atuais do usuário selecionado
+            _dados_usr = next((u_ for u_ in usuarios if u_["usuario"] == sel_login), {})
+
             with st.form("form_edit_usuario"):
-                sel_login = st.selectbox("Selecionar usuário", logins)
+                _cod_atual = get_codigo_usuario(sel_login)
+                st.markdown(f"**Editando:** {_dados_usr.get('nome', sel_login)}" + (f" · Cód. `{_cod_atual}`" if _cod_atual else ""))
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    nova_senha_ed  = st.text_input("Nova senha (deixe em branco para manter)", type="password")
-                    nova_senha_ed2 = st.text_input("Confirmar nova senha", type="password")
+                    ed_nome   = st.text_input("Nome completo", value=_dados_usr.get("nome", ""))
+                    ed_loja   = st.text_input("Loja", value=_dados_usr.get("loja", ""))
+                    ed_codigo = st.text_input(
+                        "Código do operador (3 dígitos)",
+                        value=get_codigo_usuario(sel_login),
+                        max_chars=3,
+                        placeholder="001",
+                        help="Código numérico de 3 dígitos usado na tela de login.",
+                    )
+                    ed_senha  = st.text_input("Nova senha (deixe em branco para manter)", type="password")
+                    ed_senha2 = st.text_input("Confirmar nova senha", type="password")
                 with col_b:
-                    ativar   = st.checkbox("Usuário ativo", value=True)
-                    excluir  = st.checkbox("⚠️ Excluir este usuário permanentemente")
+                    _perfil_idx = list(auth.PERFIS.keys()).index(_dados_usr.get("perfil", "vendedor")) \
+                                  if _dados_usr.get("perfil") in auth.PERFIS else 0
+                    ed_perfil = st.selectbox(
+                        "Perfil",
+                        options=list(auth.PERFIS.keys()),
+                        format_func=lambda x: auth.PERFIS[x],
+                        index=_perfil_idx,
+                    )
+                    _uf_atual = _dados_usr.get("uf") or ""
+                    _uf_opts  = [""] + _UF_STATES
+                    _uf_idx   = _uf_opts.index(_uf_atual) if _uf_atual in _uf_opts else 0
+                    ed_uf = st.selectbox(
+                        "UF (somente para Vendedor)",
+                        options=_uf_opts,
+                        format_func=lambda x: "— Todas (Admin/Supervisor) —" if x == "" else x,
+                        index=_uf_idx,
+                        help="Vendedor verá apenas os produtos da UF selecionada.",
+                    )
+                    ed_ativo  = st.checkbox("Usuário ativo", value=bool(_dados_usr.get("ativo", True)))
+                    ed_excluir = st.checkbox("⚠️ Excluir este usuário permanentemente")
 
-                if st.form_submit_button("💾 Salvar alterações"):
-                    if excluir:
+                if st.form_submit_button("💾 Salvar alterações", type="primary"):
+                    if ed_excluir:
                         ok, msg = auth.excluir_usuario(sel_login)
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
                     else:
-                        ok, msg = auth.toggle_usuario(sel_login, ativar)
-                        if ok and nova_senha_ed:
-                            if nova_senha_ed != nova_senha_ed2:
+                        # Atualiza nome / perfil / loja / uf
+                        ok, msg = auth.atualizar_usuario(sel_login, ed_nome, ed_perfil, ed_loja, ed_uf)
+                        if not ok:
+                            st.error(msg)
+                            st.stop()
+                        # Ativa / desativa
+                        ok2, msg2 = auth.toggle_usuario(sel_login, ed_ativo)
+                        if not ok2:
+                            st.error(msg2)
+                            st.stop()
+                        # Código de operador (opcional)
+                        if ed_codigo:
+                            if not ed_codigo.isdigit() or len(ed_codigo) != 3:
+                                st.error("Código deve ter exatamente 3 dígitos numéricos.")
+                                st.stop()
+                            ok_c, msg_c = set_codigo_usuario(sel_login, ed_codigo)
+                            if not ok_c:
+                                st.error(msg_c)
+                                st.stop()
+                        # Senha (opcional)
+                        if ed_senha:
+                            if ed_senha != ed_senha2:
                                 st.error("As senhas não coincidem.")
                                 st.stop()
-                            ok, msg = auth.alterar_senha(sel_login, nova_senha_ed)
-                    if ok:
-                        st.success(msg)
+                            ok3, msg3 = auth.alterar_senha(sel_login, ed_senha)
+                            if not ok3:
+                                st.error(msg3)
+                                st.stop()
+                        st.success(f"✅ Usuário '{sel_login}' atualizado.")
                         st.rerun()
-                    else:
-                        st.error(msg)
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABA 2 — PERFIS & PERMISSÕES
@@ -189,9 +278,35 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                 "variáveis de ambiente do servidor (.env)."
             )
 
+        st.info(
+            "**ℹ️ HuggingFace Space bloqueia SMTP.** "
+            "Use **SendGrid** (gratuito, qualquer destinatário): "
+            "[sendgrid.com](https://sendgrid.com) → Single Sender Verification"
+        )
+
         with st.form("form_smtp"):
+            st.markdown("##### 🔑 SendGrid API Key")
+            sg_key = st.text_input(
+                "SendGrid API Key",
+                value=_cfg.get("smtp_sendgrid_api_key", ""),
+                placeholder="SG.xxx...",
+                help="Cadastre em sendgrid.com → Settings → API Keys.",
+            )
+            st.markdown("##### 📧 Destinatários e Remetente")
             c1, c2 = st.columns(2)
             with c1:
+                smtp_dest = st.text_area(
+                    "Destinatários (separados por vírgula)",
+                    value=_cfg.get("smtp_destinatarios", ""),
+                    height=68,
+                )
+                smtp_rem  = st.text_input(
+                    "Remetente (e-mail verificado no SendGrid)",
+                    value=_cfg.get("smtp_remetente", ""),
+                    placeholder="pedidotoquedecor@gmail.com",
+                )
+            with c2:
+                st.markdown("##### ⚙️ SMTP (não funciona no HF Space)")
                 smtp_host = st.text_input(
                     "Host SMTP", value=_cfg.get("smtp_host", "smtp.gmail.com")
                 )
@@ -201,26 +316,42 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                 smtp_usr  = st.text_input(
                     "Usuário (e-mail remetente)", value=_cfg.get("smtp_usuario", "")
                 )
-            with c2:
                 smtp_pwd  = st.text_input("Senha de aplicativo", type="password")
-                smtp_rem  = st.text_input(
-                    "Remetente (nome exibido)", value=_cfg.get("smtp_remetente", "Toque de Cor Pedidos")
-                )
-                smtp_dest = st.text_area(
-                    "Destinatários (separados por vírgula)",
-                    value=_cfg.get("smtp_destinatarios", ""),
-                    height=80,
-                )
 
-            if st.form_submit_button("💾 Salvar configurações SMTP", type="primary"):
+            if st.form_submit_button("💾 Salvar configurações", type="primary"):
+                set_config("smtp_sendgrid_api_key", sg_key)
+                set_config("smtp_destinatarios", smtp_dest)
+                set_config("smtp_remetente", smtp_rem)
                 set_config("smtp_host", smtp_host)
                 set_config("smtp_port", str(int(smtp_port)))
                 set_config("smtp_usuario", smtp_usr)
-                set_config("smtp_remetente", smtp_rem)
-                set_config("smtp_destinatarios", smtp_dest)
                 if smtp_pwd:
                     set_config("smtp_senha", smtp_pwd)
-                st.success("Configurações SMTP salvas.")
+                st.success("Configurações salvas.")
+
+        # Testar e-mail fora do form
+        st.markdown("#### 🧪 Testar envio de e-mail")
+        if st.button("📧 Enviar e-mail de teste", use_container_width=False):
+            from orders import enviar_email_pedido
+            _ped_teste = {
+                "numero": 0,
+                "usuario": u.get("usuario", "admin"),
+                "loja": u.get("loja", "Teste"),
+                "uf": "RN",
+                "desconto_pct": 0,
+                "total_geral": 0,
+                "criado_em": "",
+            }
+            _itens_teste = [{
+                "cod_sku": "TESTE-001", "cod_citel": "-", "marca": "Teste",
+                "descricao": "Item de teste — ignore", "embalagem": "—",
+                "qtd": 1, "preco_unit": 0.0, "total": 0.0,
+            }]
+            _ok, _msg = enviar_email_pedido(_ped_teste, _itens_teste, mostrar_precos=False)
+            if _ok:
+                st.success(f"✅ {_msg}")
+            else:
+                st.error(f"❌ Falha: {_msg}")
 
         st.divider()
         st.markdown("### Outras Configurações")
@@ -385,6 +516,13 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                             _ok_s, _msg_s = _scs.main(force=True)
                         if _ok_s:
                             st.success(f"✅ CITEL sincronizado — {_msg_s}")
+                            try:
+                                import db as _db
+                                _db.clear_disk_cache()
+                                st.cache_data.clear()
+                                st.cache_resource.clear()
+                            except Exception:
+                                pass
                         else:
                             st.caption(f"ℹ️ Sync CITEL indisponível neste ambiente: {_msg_s}")
                     except Exception as _e_scs:

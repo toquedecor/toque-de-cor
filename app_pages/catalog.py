@@ -108,9 +108,16 @@ def render(
         _sim_lookup[_p["sku_b"]] = {"sku": _p["sku_a"], "label": _p.get("label_a", _p["sku_a"])}
 
     # ── Seletores de UF e desconto ───────────────────────────────────────────
+    _perfil_atual = st.session_state.get("auth_perfil", "")
+    _uf_usuario   = st.session_state.get("auth_uf", "") or ""
+
     c1, c2 = st.columns([1, 1])
     with c1:
-        uf = st.selectbox("**UF**", STATES, key="cat_uf")
+        if _perfil_atual == "vendedor" and _uf_usuario:
+            # Vendedor vê apenas sua UF — selectbox fixo (sem escolha)
+            uf = st.selectbox("**UF**", [_uf_usuario], key="cat_uf", disabled=True)
+        else:
+            uf = st.selectbox("**UF**", STATES, key="cat_uf")
     with c2:
         if ver_preco:
             pct = st.number_input(
@@ -174,10 +181,36 @@ def render(
     aplc_key  = f"aplc_cnt_{uf}"
     dlg_key   = f"dlg_cnt_{uf}"       # incrementado ao fechar diálogo → reseta ☑
     sim_sup_key = f"sim_sup_{uf}"     # SKU cujo diálogo já foi dispensado (X)
-    if qtd_key   not in st.session_state: st.session_state[qtd_key]   = {}
-    if zerar_key not in st.session_state: st.session_state[zerar_key] = 0
-    if aplc_key  not in st.session_state: st.session_state[aplc_key]  = 0
-    if dlg_key   not in st.session_state: st.session_state[dlg_key]   = 0
+    _flt_cnt_key = f"_flt_cnt_{uf}"   # incrementado ao mudar filtro → reseta editor
+    _flt_sig_key = f"_flt_sig_{uf}"   # assinatura do filtro atual
+    if qtd_key      not in st.session_state: st.session_state[qtd_key]      = {}
+    if zerar_key    not in st.session_state: st.session_state[zerar_key]    = 0
+    if aplc_key     not in st.session_state: st.session_state[aplc_key]     = 0
+    if dlg_key      not in st.session_state: st.session_state[dlg_key]      = 0
+    if _flt_cnt_key not in st.session_state: st.session_state[_flt_cnt_key] = 0
+    if _flt_sig_key not in st.session_state: st.session_state[_flt_sig_key] = None
+
+    # Detecta mudança de filtro e incrementa contador para forçar reset do editor
+    _flt_sig_cur = repr((sorted(sel_grupos), sorted(sel_marcas), sorted(sel_embs), busca.strip().upper()))
+    if st.session_state[_flt_sig_key] != _flt_sig_cur:
+        if st.session_state[_flt_sig_key] is not None:   # não é primeiro render
+            # Salva QTDs do editor atual ANTES de resetar (captura edições não aplicadas)
+            _old_editor_key = f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[_flt_cnt_key]}"
+            _prev_sku = st.session_state.get(f"_prev_sku_{uf}", [])
+            for _ri_str, _rd in st.session_state.get(_old_editor_key, {}).get("edited_rows", {}).items():
+                try:
+                    _ri = int(_ri_str)
+                    if _ri < len(_prev_sku) and "QTD" in _rd:
+                        _v = max(0, int(float(str(_rd["QTD"])))) if _rd["QTD"] is not None else 0
+                        _s = str(_prev_sku[_ri])
+                        if _v > 0:
+                            st.session_state[qtd_key][_s] = _v
+                        else:
+                            st.session_state[qtd_key].pop(_s, None)
+                except (ValueError, TypeError):
+                    pass
+            st.session_state[_flt_cnt_key] += 1
+        st.session_state[_flt_sig_key] = _flt_sig_cur
 
     qtd_map   = st.session_state[qtd_key]   # quantidades APLICADAS (para preview)
     sku_array = filtered["COD_SKU"].values
@@ -205,6 +238,7 @@ def render(
         _display["PREÇO C/ DESC."] = np.round(filtered["PRECO"].values * factor, 2)
 
     _df_edit = pd.DataFrame(_display)
+    _df_edit["ver_sim"] = _df_edit["ver_sim"].astype(bool)
 
     _col_cfg = {
         "ver_sim":       st.column_config.CheckboxColumn("☑", width=35,
@@ -230,14 +264,17 @@ def render(
         if not citel_via_sb:
             st.warning("⚠️ BD offline — COD CITEL, Grupo e Marca indisponíveis.")
 
-    # Chave inclui aplc_key e dlg_key: resetam o editor quando Aplicar/Fechar são clicados
+    # Chave inclui filtro: reseta editor ao mudar filtro (preserva QTDs via qtd_map)
     edited = st.data_editor(
         _df_edit,
-        key=f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}",
+        key=f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[_flt_cnt_key]}",
         column_config=_col_cfg,
         hide_index=True,
         use_container_width=True,
     )
+
+    # Salva sku_array atual para uso na próxima mudança de filtro
+    st.session_state[f"_prev_sku_{uf}"] = list(map(str, sku_array))
 
     # ── Diálogo de similar (abre sobre a tabela, funciona em tela cheia) ───────
     _marcadas = edited[edited["ver_sim"] == True]
@@ -267,16 +304,18 @@ def render(
     with _col_ap:
         if st.button("✅ Aplicar Quantidades", type="primary",
                      use_container_width=True, key=f"btn_ap_{uf}"):
-            _new_qtd: dict = {}
+            # Mescla visíveis no qtd_map (já atualizado pelo auto-save)
             for i in range(len(sku_array)):
                 try:
                     _v = edited.iloc[i]["QTD"]
                     _v = max(0, int(float(str(_v)))) if _v is not None else 0
                 except (ValueError, TypeError):
                     _v = 0
+                _s = str(sku_array[i])
                 if _v > 0:
-                    _new_qtd[str(sku_array[i])] = _v
-            st.session_state[qtd_key] = _new_qtd
+                    st.session_state[qtd_key][_s] = _v
+                else:
+                    st.session_state[qtd_key].pop(_s, None)
             st.session_state[aplc_key] += 1   # força editor a refletir valores salvos
             st.rerun()
     with _col_zer:
@@ -324,34 +363,122 @@ def render(
 
     prev_cols = ["cod_citel", "cod_sku", "marca", "descricao", "embalagem", "qtd"]
     prev_cfg  = {
-        "cod_citel": st.column_config.TextColumn("COD CITEL", width=120),
-        "cod_sku":   st.column_config.TextColumn("SKU", width=110),
-        "marca":     st.column_config.TextColumn("Marca", width=120),
-        "descricao": st.column_config.TextColumn("Descrição"),
-        "embalagem": st.column_config.TextColumn("Embalagem", width=160),
-        "qtd":       st.column_config.NumberColumn("Qtd", width=70),
+        "cod_citel": st.column_config.TextColumn("COD CITEL", width=120, disabled=True),
+        "cod_sku":   st.column_config.TextColumn("SKU", width=110, disabled=True),
+        "marca":     st.column_config.TextColumn("Marca", width=120, disabled=True),
+        "descricao": st.column_config.TextColumn("Descrição", disabled=True),
+        "embalagem": st.column_config.TextColumn("Embalagem", width=160, disabled=True),
+        "qtd":       st.column_config.NumberColumn("Qtd", width=70, min_value=0, step=1),
     }
     if ver_preco:
         prev_cols += ["preco_unit", "total"]
-        prev_cfg["preco_unit"] = st.column_config.NumberColumn("Preço Unit.", format="R$ %.2f", width=130)
-        prev_cfg["total"]      = st.column_config.NumberColumn("Total", format="R$ %.2f", width=130)
+        prev_cfg["preco_unit"] = st.column_config.NumberColumn("Preço Unit.", format="R$ %.2f", width=130, disabled=True)
+        prev_cfg["total"]      = st.column_config.NumberColumn("Total", format="R$ %.2f", width=130, disabled=True)
 
-    st.dataframe(
+    _prev_ver_key = f"_prev_ver_{uf}"
+    if _prev_ver_key not in st.session_state:
+        st.session_state[_prev_ver_key] = 0
+
+    _edited_prev = st.data_editor(
         pd.DataFrame(itens_pedido)[prev_cols],
         column_config=prev_cfg,
+        num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
+        key=f"prev_ed_{uf}_{st.session_state[aplc_key]}_{st.session_state[_prev_ver_key]}",
     )
 
+    # Propaga edições de QTD e deleções → qtd_key (fonte de verdade)
+    _orig_map     = {it["cod_sku"]: it for it in itens_pedido}
+    _edited_skus  = set(_edited_prev["cod_sku"].dropna().astype(str).tolist())
+    _qmap_new     = dict(qtd_map)
+    _prev_changed = False
+
+    # Deleções: SKUs que sumiram do editor
+    for _sku in list(_orig_map.keys()):
+        if _sku not in _edited_skus:
+            _prev_changed = True
+            _qmap_new[_sku] = 0
+
+    # Edições de QTD nas linhas restantes
+    for _, erow in _edited_prev.iterrows():
+        _sku = str(erow.get("cod_sku", "")) if pd.notna(erow.get("cod_sku")) else ""
+        if _sku not in _orig_map:
+            continue  # ignora linhas em branco adicionadas acidentalmente
+        _nq = int(erow["qtd"]) if pd.notna(erow.get("qtd")) else 0
+        if _nq != _orig_map[_sku]["qtd"]:
+            _prev_changed = True
+        _qmap_new[_sku] = _nq
+
+    # Reconstrói itens_pedido a partir do editor (sem zeros/deletados)
+    itens_pedido = []
+    for _, erow in _edited_prev.iterrows():
+        _sku = str(erow.get("cod_sku", "")) if pd.notna(erow.get("cod_sku")) else ""
+        if _sku not in _orig_map:
+            continue
+        _nq = int(erow["qtd"]) if pd.notna(erow.get("qtd")) else 0
+        if _nq > 0:
+            _orig = _orig_map[_sku]
+            itens_pedido.append({**_orig, "qtd": _nq, "total": round(_orig["preco_unit"] * _nq, 2)})
+
+    if _prev_changed:
+        st.session_state[qtd_key]       = _qmap_new
+        st.session_state[_prev_ver_key] += 1
+        st.rerun()
+
+    # Total sempre calculado (vendedor não vê na tela, mas é gravado no banco)
+    total_geral = sum(it["total"] for it in itens_pedido)
     if ver_preco:
-        total_geral = sum(it["total"] for it in itens_pedido)
         tg_fmt = f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         st.markdown(
             f"<div style='text-align:right;font-size:1.1em'><b>Total geral: {tg_fmt}</b></div>",
             unsafe_allow_html=True,
         )
-    else:
-        total_geral = 0.0
+
+    # ── Botões de ação ────────────────────────────────────────────────────────
+    if not pode_ped:
+        st.warning("Você não tem permissão para enviar pedidos.")
+        return
+
+    st.divider()
+    exige_aprov = get_config("pedido_aprovacao", "false") == "true"
+    label_btn   = "📨 Enviar para Aprovação" if exige_aprov else "📨 Enviar Pedido"
+
+    col_env, col_exp_suv, col_exp_sw, col_exp_all = st.columns(4)
+
+    # Botão Enviar Pedido
+    with col_env:
+        if st.button(label_btn, type="primary", use_container_width=True):
+            pedido_data = {
+                "usuario":     u.get("nome", u.get("usuario", "")),
+                "loja":        u.get("loja", ""),
+                "uf":          uf,
+                "desconto_pct": pct,
+                "total_geral":  total_geral,
+            }
+            ok, msg, pid = salvar_pedido(pedido_data, itens_pedido)
+            if ok:
+                if exige_aprov:
+                    st.success(f"✅ {msg} — aguardando aprovação do supervisor.")
+                else:
+                    # Envia e-mail imediatamente
+                    pedido_data["numero"] = pid
+                    ok_mail, msg_mail = enviar_email_pedido(
+                        pedido_data, itens_pedido, mostrar_precos=True
+                    )
+                    atualizar_status_pedido(pid, "enviado", u.get("nome", u.get("usuario","")))
+                    st.success(f"✅ {msg}")
+                    if ok_mail:
+                        st.info(f"📧 {msg_mail}")
+                    else:
+                        st.warning(f"⚠️ Pedido salvo, mas falha no e-mail: {msg_mail}")
+
+                # Limpa quantidades
+                st.session_state[qtd_key]   = {}
+                st.session_state[zerar_key] += 1
+                st.rerun()
+            else:
+                st.error(f"Erro ao salvar pedido: {msg}")
 
     # ── Similares dos itens selecionados ──────────────────────────────────────
     _sim_selecionados = [(sku, _sim_lookup[sku]) for sku in _sel_skus if sku in _sim_lookup]
@@ -431,52 +558,6 @@ def render(
                         new_map[_sku_sim] = new_map.get(_sku_sim, 0) + _qtd_orig
                         st.session_state[qtd_key] = new_map
                         st.rerun()
-
-    st.divider()
-
-    # ── Botões de ação ────────────────────────────────────────────────────────
-    if not pode_ped:
-        st.warning("Você não tem permissão para enviar pedidos.")
-        return
-
-    col_env, col_exp_suv, col_exp_sw, col_exp_all = st.columns(4)
-
-    # Botão Enviar Pedido
-    with col_env:
-        exige_aprov = get_config("pedido_aprovacao", "false") == "true"
-        label_btn   = "📨 Enviar para Aprovação" if exige_aprov else "📨 Enviar Pedido"
-
-        if st.button(label_btn, type="primary", use_container_width=True):
-            pedido_data = {
-                "usuario":     u.get("usuario", ""),
-                "loja":        u.get("loja", ""),
-                "uf":          uf,
-                "desconto_pct": pct,
-                "total_geral":  total_geral,
-            }
-            ok, msg, pid = salvar_pedido(pedido_data, itens_pedido)
-            if ok:
-                if exige_aprov:
-                    st.success(f"✅ {msg} — aguardando aprovação do supervisor.")
-                else:
-                    # Envia e-mail imediatamente
-                    pedido_data["numero"] = pid
-                    ok_mail, msg_mail = enviar_email_pedido(
-                        pedido_data, itens_pedido, mostrar_precos=True
-                    )
-                    atualizar_status_pedido(pid, "enviado", u.get("usuario",""))
-                    st.success(f"✅ {msg}")
-                    if ok_mail:
-                        st.info(f"📧 {msg_mail}")
-                    else:
-                        st.warning(f"⚠️ Pedido salvo, mas falha no e-mail: {msg_mail}")
-
-                # Limpa quantidades
-                st.session_state[qtd_key]   = {}
-                st.session_state[zerar_key] += 1
-                st.rerun()
-            else:
-                st.error(f"Erro ao salvar pedido: {msg}")
 
     # Exportar Excel Suvinil
     with col_exp_suv:

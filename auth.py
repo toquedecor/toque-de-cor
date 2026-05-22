@@ -13,9 +13,11 @@ Sessão: st.session_state com expiração configurável (padrão 8h).
 
 import hashlib
 import os
+import re
+import unicodedata
 import uuid
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ── Dependências opcionais ────────────────────────────────────────────────────
 try:
@@ -35,15 +37,8 @@ def _token_store() -> dict:
 
 
 def _get_cookie_ctrl():
-    """Retorna CookieController criando uma única instância por sessão WebSocket."""
-    _KEY = "_tdc_cookie_ctrl"
-    if _KEY not in st.session_state:
-        try:
-            from streamlit_cookies_controller import CookieController
-            st.session_state[_KEY] = CookieController(key="tdc_auth")
-        except Exception:
-            st.session_state[_KEY] = None
-    return st.session_state.get(_KEY)
+    """Desabilitado — streamlit-cookies-controller não funciona no HF Spaces (cross-origin)."""
+    return None
 
 PERFIS = {
     "admin":      "Administrador",
@@ -53,8 +48,8 @@ PERFIS = {
 
 # Permissões padrão (usadas como fallback se não houver configuração no Supabase)
 _PERMISSOES_PADRAO = {
-    "admin":      {"ver_precos", "fazer_pedidos", "gerenciar_usuarios", "importar_planilha", "aprovar_pedidos"},
-    "supervisor": {"ver_precos", "fazer_pedidos", "aprovar_pedidos"},
+    "admin":      {"ver_precos", "fazer_pedidos", "gerenciar_usuarios", "importar_planilha", "aprovar_pedidos", "reenviar_pedido"},
+    "supervisor": {"ver_precos", "fazer_pedidos", "aprovar_pedidos", "reenviar_pedido"},
     "vendedor":   {"fazer_pedidos"},
 }
 
@@ -63,6 +58,7 @@ TODAS_PERMISSOES = {
     "fazer_pedidos":      "📋 Montar e enviar pedidos",
     "ver_precos":         "👁️ Ver preços dos produtos",
     "aprovar_pedidos":    "✅ Aprovar / rejeitar pedidos",
+    "reenviar_pedido":    "📧 Reenviar pedido por e-mail",
     "importar_planilha":  "📥 Importar tabela de preços",
     "gerenciar_usuarios": "👥 Gerenciar usuários (Painel Admin)",
 }
@@ -114,7 +110,7 @@ def listar_usuarios() -> list[dict]:
     if not sb:
         return _usuarios_fallback()
     try:
-        r = sb.table("usuarios").select("id, usuario, nome, perfil, loja, ativo").execute()
+        r = sb.table("usuarios").select("id, usuario, nome, perfil, loja, uf, ativo").execute()
         return r.data or []
     except Exception:
         return _usuarios_fallback()
@@ -139,8 +135,37 @@ def buscar_usuario(usuario: str) -> dict | None:
         return _buscar_fallback(usuario)
 
 
-def criar_usuario(usuario: str, nome: str, senha: str, perfil: str, loja: str) -> tuple[bool, str]:
-    """Cria novo usuário. Retorna (sucesso, mensagem)."""
+def buscar_usuario_por_nome(nome: str) -> dict | None:
+    """Busca o usuário mais recente pelo nome completo. Usado ao vincular código após criação."""
+    sb = _get_sb()
+    if not sb:
+        return None
+    try:
+        r = (
+            sb.table("usuarios")
+            .select("*")
+            .eq("nome", nome.strip())
+            .eq("ativo", True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return r.data[0] if r.data else None
+    except Exception:
+        return None
+
+
+def _gerar_login(nome: str) -> str:
+    """Gera login interno a partir do nome completo (sem acentos, letras e pontos)."""
+    nfd = unicodedata.normalize("NFD", nome.strip().lower())
+    sem_ac = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    slug = re.sub(r"[^a-z0-9.]", "", sem_ac.replace(" ", "."))
+    slug = re.sub(r"\.+", ".", slug).strip(".")
+    return slug or "usuario"
+
+
+def criar_usuario(nome: str, senha: str, perfil: str, loja: str, uf: str = "", usuario: str = "") -> tuple[bool, str]:
+    """Cria novo usuário. Login é gerado automaticamente a partir do nome se não informado."""
     if perfil not in PERFIS:
         return False, f"Perfil inválido: {perfil}"
     if len(senha) < 6:
@@ -148,25 +173,46 @@ def criar_usuario(usuario: str, nome: str, senha: str, perfil: str, loja: str) -
     sb = _get_sb()
     if not sb:
         return False, "Banco de dados indisponível."
+    # Auto-gera login único a partir do nome
+    if not usuario:
+        usuario = _gerar_login(nome)
+    base_login = usuario
+    sufixo = 2
+    while True:
+        try:
+            existe = sb.table("usuarios").select("usuario").eq("usuario", usuario).execute()
+            if not existe.data:
+                break
+            usuario = f"{base_login}{sufixo}"
+            sufixo += 1
+        except Exception:
+            break
     try:
         sb.table("usuarios").insert({
-            "usuario": usuario.strip().lower(),
+            "usuario": usuario,
             "nome":    nome.strip(),
             "senha":   hash_senha(senha),
             "perfil":  perfil,
             "loja":    loja.strip(),
+            "uf":      uf.strip() or None,
             "ativo":   True,
         }).execute()
-        return True, f"Usuário '{usuario}' criado com sucesso."
+        # Marca que o novo usuário deve trocar a senha no primeiro acesso
+        try:
+            from db_supabase import set_precisa_trocar_senha
+            set_precisa_trocar_senha(usuario)
+        except Exception:
+            pass
+        return True, f"Usuário '{nome}' criado com sucesso."
     except Exception as e:
         msg = str(e)
         if "duplicate" in msg.lower() or "unique" in msg.lower():
-            return False, f"Usuário '{usuario}' já existe."
+            return False, f"Usuário '{nome}' já existe."
         return False, f"Erro ao criar usuário: {msg}"
 
 
 def alterar_senha(usuario: str, nova_senha: str) -> tuple[bool, str]:
-    """Altera a senha de um usuário."""
+    """Altera a senha de um usuário (reset pelo admin — exige troca no próximo login)."""
     if len(nova_senha) < 6:
         return False, "Senha deve ter no mínimo 6 caracteres."
     sb = _get_sb()
@@ -174,6 +220,12 @@ def alterar_senha(usuario: str, nova_senha: str) -> tuple[bool, str]:
         return False, "Banco de dados indisponível."
     try:
         sb.table("usuarios").update({"senha": hash_senha(nova_senha)}).eq("usuario", usuario).execute()
+        # Força o usuário a trocar na próxima sessão
+        try:
+            from db_supabase import set_precisa_trocar_senha
+            set_precisa_trocar_senha(usuario)
+        except Exception:
+            pass
         return True, "Senha alterada com sucesso."
     except Exception as e:
         return False, str(e)
@@ -200,6 +252,25 @@ def excluir_usuario(usuario: str) -> tuple[bool, str]:
     try:
         sb.table("usuarios").delete().eq("usuario", usuario).execute()
         return True, f"Usuário '{usuario}' excluído."
+    except Exception as e:
+        return False, str(e)
+
+
+def atualizar_usuario(usuario: str, nome: str, perfil: str, loja: str, uf: str = "") -> tuple[bool, str]:
+    """Atualiza nome, perfil, loja e uf de um usuário existente."""
+    if perfil not in PERFIS:
+        return False, f"Perfil inválido: {perfil}"
+    sb = _get_sb()
+    if not sb:
+        return False, "Banco de dados indisponível."
+    try:
+        sb.table("usuarios").update({
+            "nome":   nome.strip(),
+            "perfil": perfil,
+            "loja":   loja.strip(),
+            "uf":     uf.strip() or None,
+        }).eq("usuario", usuario).execute()
+        return True, f"Usuário '{usuario}' atualizado com sucesso."
     except Exception as e:
         return False, str(e)
 
@@ -250,22 +321,35 @@ def fazer_login(usuario: str, senha: str) -> tuple[bool, str]:
 
     _perfil = dados.get("perfil", "vendedor")
     _token  = str(uuid.uuid4())
-    _token_store()[_token] = {
+    _uf = dados.get("uf") or ""
+    _dados_sessao = {
         "usuario": dados["usuario"],
         "nome":    dados.get("nome", usuario),
         "perfil":  _perfil,
         "loja":    dados.get("loja", ""),
+        "uf":      _uf,
     }
+    _token_store()[_token] = _dados_sessao
+    # Persiste no Supabase — sobrevive a reinicialização do servidor
+    try:
+        from db_supabase import salvar_sessao
+        salvar_sessao(_token, _dados_sessao)
+    except Exception:
+        pass
     st.session_state["auth_usuario"]    = dados["usuario"]
     st.session_state["auth_nome"]       = dados.get("nome", usuario)
     st.session_state["auth_perfil"]     = _perfil
     st.session_state["auth_loja"]       = dados.get("loja", "")
+    st.session_state["auth_uf"]         = _uf
     st.session_state["auth_permissoes"] = _permissoes_do_perfil(_perfil)
     st.session_state["auth_token"]      = _token
-    # Persiste token no cookie — sobrevive a reconexões WebSocket
-    ctrl = _get_cookie_ctrl()
-    if ctrl:
-        ctrl.set("tdc_session", _token)
+    # Persiste token na URL (query param) — sobrevive ao Sleep do Space no HuggingFace
+    try:
+        st.query_params["t"] = _token
+    except Exception:
+        pass
+    # Verifica se precisa trocar senha
+    st.session_state["auth_precisa_trocar_senha"] = _checar_troca_senha(dados["usuario"])
     return True, "Login realizado com sucesso."
 
 
@@ -274,37 +358,60 @@ def fazer_logout():
     token = st.session_state.get("auth_token")
     if token:
         _token_store().pop(token, None)
-    ctrl = _get_cookie_ctrl()
-    if ctrl:
         try:
-            ctrl.remove("tdc_session")
+            from db_supabase import remover_sessao
+            remover_sessao(token)
         except Exception:
             pass
-    for key in ["auth_usuario", "auth_nome", "auth_perfil", "auth_loja",
-                "auth_expira", "auth_permissoes", "auth_token", "_tdc_cookie_ctrl"]:
+    # Remove query param da URL
+    try:
+        st.query_params.pop("t", None)
+    except Exception:
+        pass
+    for key in ["auth_usuario", "auth_nome", "auth_perfil", "auth_loja", "auth_uf",
+                "auth_expira", "auth_permissoes", "auth_token", "_cookie_restore_tried"]:
         st.session_state.pop(key, None)
 
 
-def esta_logado() -> bool:
-    """Verifica se há sessão ativa. Restaura automaticamente via cookie após reconexão."""
-    if "auth_usuario" in st.session_state:
-        return True
-    # session_state vazio (reconexão WebSocket ou refresh) — tenta restaurar pelo cookie
-    ctrl = _get_cookie_ctrl()
-    if ctrl:
+def _restaurar_sessao_por_token(token: str) -> bool:
+    """Tenta restaurar a sessão a partir de um token (memória ou Supabase)."""
+    dados = _token_store().get(token)
+    if not dados:
         try:
-            token = ctrl.get("tdc_session")
-            if token and token in _token_store():
-                dados = _token_store()[token]
-                st.session_state["auth_usuario"]    = dados["usuario"]
-                st.session_state["auth_nome"]       = dados["nome"]
-                st.session_state["auth_perfil"]     = dados["perfil"]
-                st.session_state["auth_loja"]       = dados["loja"]
-                st.session_state["auth_permissoes"] = _permissoes_do_perfil(dados["perfil"])
-                st.session_state["auth_token"]      = token
-                return True
+            from db_supabase import buscar_sessao
+            dados = buscar_sessao(token)
+            if dados:
+                _token_store()[token] = dados
         except Exception:
             pass
+    if dados:
+        st.session_state["auth_usuario"]    = dados["usuario"]
+        st.session_state["auth_nome"]       = dados["nome"]
+        st.session_state["auth_perfil"]     = dados["perfil"]
+        st.session_state["auth_loja"]       = dados["loja"]
+        st.session_state["auth_uf"]         = dados.get("uf", "")
+        st.session_state["auth_permissoes"] = _permissoes_do_perfil(dados["perfil"])
+        st.session_state["auth_token"]      = token
+        # Ao restaurar sessão, revalida se precisa trocar senha (não confia apenas no cache)
+        if "auth_precisa_trocar_senha" not in st.session_state:
+            st.session_state["auth_precisa_trocar_senha"] = _checar_troca_senha(dados["usuario"])
+        return True
+    return False
+
+
+def esta_logado() -> bool:
+    """Verifica se há sessão ativa. Restaura automaticamente após reconexão ou Sleep do Space."""
+    if "auth_usuario" in st.session_state:
+        return True
+
+    # 1. Query param (mecanismo principal — parte da URL, sobrevive ao Sleep do HF Space)
+    try:
+        token = st.query_params.get("t", "")
+        if token and _restaurar_sessao_por_token(token):
+            return True
+    except Exception:
+        pass
+
     return False
 
 
@@ -317,6 +424,7 @@ def usuario_atual() -> dict:
         "nome":    st.session_state.get("auth_nome", ""),
         "perfil":  st.session_state.get("auth_perfil", "vendedor"),
         "loja":    st.session_state.get("auth_loja", ""),
+        "uf":      st.session_state.get("auth_uf", ""),
     }
 
 
@@ -331,34 +439,180 @@ def tem_permissao(permissao: str) -> bool:
     return permissao in perms
 
 
+# ── Troca obrigatória de senha ───────────────────────────────────────────────
+
+def _checar_troca_senha(usuario: str) -> bool:
+    """
+    Retorna True se o usuário deve ser forçado a trocar a senha:
+      - Nunca trocou (flag padrão '1')
+      - Última troca há mais de 90 dias (≈ 3 meses)
+    """
+    try:
+        from db_supabase import get_senha_status
+        status = get_senha_status(usuario)
+        if status["precisa_trocar"]:
+            return True
+        alterada_em = status["alterada_em"]
+        if not alterada_em:
+            return True
+        dt = datetime.fromisoformat(str(alterada_em).replace("Z", "+00:00"))
+        agora = datetime.now(timezone.utc)
+        if (agora - dt.astimezone(timezone.utc)).days >= 90:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _executar_troca_senha(usuario: str, senha_atual: str, nova_senha: str, confirmar: str) -> tuple[bool, str]:
+    """Valida e aplica a troca de senha do próprio usuário."""
+    if not senha_atual or not nova_senha or not confirmar:
+        return False, "Preencha todos os campos."
+    if len(nova_senha) < 6:
+        return False, "A nova senha deve ter no mínimo 6 caracteres."
+    if nova_senha != confirmar:
+        return False, "Nova senha e confirmação não conferem."
+    dados = buscar_usuario(usuario)
+    if not dados:
+        return False, "Usuário não encontrado."
+    if not verificar_senha(senha_atual, dados.get("senha", "")):
+        return False, "Senha atual incorreta."
+    if verificar_senha(nova_senha, dados.get("senha", "")):
+        return False, "A nova senha deve ser diferente da senha atual."
+    sb = _get_sb()
+    if not sb:
+        return False, "Banco de dados indisponível."
+    try:
+        sb.table("usuarios").update({"senha": hash_senha(nova_senha)}).eq("usuario", usuario).execute()
+        from db_supabase import set_senha_trocada
+        set_senha_trocada(usuario)
+        st.session_state["auth_precisa_trocar_senha"] = False
+        return True, "Senha alterada com sucesso!"
+    except Exception as e:
+        return False, f"Erro ao alterar senha: {e}"
+
+
+def _tela_troca_senha():
+    """Tela bloqueante de troca obrigatória de senha."""
+    col_l, col_c, col_r = st.columns([1, 1.2, 1])
+    with col_c:
+        _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        if os.path.exists(_logo_path):
+            st.image(_logo_path, use_container_width=True)
+        st.markdown(
+            "<p style='text-align:center;color:#888;margin-top:0.2rem'>Sistema de Pedidos</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("#### 🔒 Alteração de Senha Necessária")
+        st.info(
+            "Por segurança, você precisa cadastrar uma nova senha antes de continuar. "
+            "A senha deve ser trocada a cada 3 meses."
+        )
+        with st.form("form_troca_senha"):
+            senha_atual = st.text_input("Senha atual",              type="password", placeholder="••••••••")
+            nova_senha  = st.text_input("Nova senha (mín. 6 chars)", type="password", placeholder="••••••••")
+            confirmar   = st.text_input("Confirme a nova senha",     type="password", placeholder="••••••••")
+            submitted   = st.form_submit_button("Alterar Senha", use_container_width=True, type="primary")
+        if submitted:
+            usuario = st.session_state.get("auth_usuario", "")
+            ok, msg = _executar_troca_senha(usuario, senha_atual, nova_senha, confirmar)
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+        if st.button("Sair", use_container_width=True):
+            fazer_logout()
+            st.rerun()
+
+
 def requer_login():
     """
     Exibe tela de login se não autenticado.
-    Deve ser chamado no início de cada página.
-    Retorna True se autenticado, False se exibiu tela de login.
+    Exibe tela de troca de senha se autenticado mas com senha expirada/nova.
+    Retorna True apenas quando autenticado E senha em dia.
+
+    Fluxo em 2 passos:
+      Passo 1 — Código do operador (3 dígitos) → exibe nome
+      Passo 2 — Senha → autentica e libera o app
     """
     if esta_logado():
+        if st.session_state.get("auth_precisa_trocar_senha", False):
+            _tela_troca_senha()
+            return False
         return True
 
     _seed_admin_fallback()
 
-    st.markdown(
-        "<h2 style='text-align:center;margin-top:3rem'>🎨 Toque de Cor</h2>"
-        "<p style='text-align:center;color:#888'>Sistema de Pedidos</p>",
-        unsafe_allow_html=True,
-    )
+    _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+
+    # ── Passo 1: código do operador ───────────────────────────────────────────
+    if not st.session_state.get("_login_codigo_ok"):
+        col_l, col_c, col_r = st.columns([1, 1.2, 1])
+        with col_c:
+            if os.path.exists(_logo_path):
+                st.image(_logo_path, use_container_width=True)
+            st.markdown(
+                "<p style='text-align:center;color:#888;margin-top:0.2rem'>Sistema de Pedidos</p>",
+                unsafe_allow_html=True,
+            )
+            with st.form("form_login_codigo"):
+                st.markdown("#### Entrar")
+                codigo = st.text_input("Código do operador", max_chars=3, placeholder="000")
+                submitted = st.form_submit_button("Continuar →", use_container_width=True, type="primary")
+
+            if submitted:
+                try:
+                    from db_supabase import buscar_login_por_codigo
+                    login = buscar_login_por_codigo(codigo.strip())
+                except Exception:
+                    login = ""
+                if login:
+                    dados = buscar_usuario(login)
+                    if dados:
+                        st.session_state["_login_codigo_ok"]    = True
+                        st.session_state["_login_usuario_pre"]  = login
+                        st.rerun()
+                    else:
+                        st.error("Código não encontrado.")
+                else:
+                    st.error("Código não encontrado.")
+        return False
+
+    # ── Passo 2: senha ────────────────────────────────────────────────────────
+    login_pre = st.session_state.get("_login_usuario_pre", "")
+    dados_pre = buscar_usuario(login_pre) if login_pre else None
+    if not dados_pre:
+        st.session_state.pop("_login_codigo_ok", None)
+        st.session_state.pop("_login_usuario_pre", None)
+        st.rerun()
+        return False
 
     col_l, col_c, col_r = st.columns([1, 1.2, 1])
     with col_c:
-        with st.form("form_login"):
-            st.markdown("#### Entrar")
-            usr = st.text_input("Usuário", placeholder="seu.usuario")
-            pwd = st.text_input("Senha", type="password", placeholder="••••••••")
-            submitted = st.form_submit_button("Entrar", use_container_width=True, type="primary")
+        if os.path.exists(_logo_path):
+            st.image(_logo_path, use_container_width=True)
+        st.markdown(
+            "<p style='text-align:center;color:#888;margin-top:0.2rem'>Sistema de Pedidos</p>",
+            unsafe_allow_html=True,
+        )
+        st.success(f"👋 Olá, **{dados_pre.get('nome', login_pre)}!**")
+        st.caption(f"{PERFIS.get(dados_pre.get('perfil', ''), '')} · {dados_pre.get('loja', '')}")
 
-        if submitted:
-            ok, msg = fazer_login(usr, pwd)
+        with st.form("form_login_senha"):
+            pwd = st.text_input("Senha", type="password", placeholder="••••••••")
+            entrar = st.form_submit_button("Entrar", use_container_width=True, type="primary")
+
+        if st.button("← Voltar", use_container_width=True):
+            st.session_state.pop("_login_codigo_ok", None)
+            st.session_state.pop("_login_usuario_pre", None)
+            st.rerun()
+
+        if entrar:
+            ok, msg = fazer_login(login_pre, pwd)
             if ok:
+                st.session_state.pop("_login_codigo_ok", None)
+                st.session_state.pop("_login_usuario_pre", None)
                 st.rerun()
             else:
                 st.error(msg)
