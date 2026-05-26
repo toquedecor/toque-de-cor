@@ -466,7 +466,19 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                     from datetime import datetime, timezone, timedelta
                     _BR_TZ = timezone(timedelta(hours=-3))
 
-                    # Importa catálogo para o Supabase
+                    # Sync CITEL PRIMEIRO — garante citel_itens atualizado antes de importar o Excel
+                    try:
+                        import sync_citel_supabase as _scs
+                        with st.spinner("🔄 Sincronizando catálogo CITEL → Supabase..."):
+                            _ok_s, _msg_s = _scs.main(force=True)
+                        if _ok_s:
+                            st.success(f"✅ CITEL sincronizado — {_msg_s}")
+                        else:
+                            st.caption(f"ℹ️ Sync CITEL indisponível neste ambiente: {_msg_s}")
+                    except Exception as _e_scs:
+                        st.caption(f"ℹ️ Sync CITEL não executado: {_e_scs}")
+
+                    # Importa catálogo para o Supabase (já com citel_itens atualizado)
                     with st.spinner("⏳ Comparando e enviando catálogo para o Supabase... (pode levar ~1 minuto)"):
                         try:
                             from importar_catalogo import importar
@@ -508,25 +520,6 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                             clear_caches_fn()
                     except Exception:
                         pass
-
-                    # Sync CITEL inline (funciona quando MySQL acessível — local ou rede da empresa)
-                    try:
-                        import sync_citel_supabase as _scs
-                        with st.spinner("🔄 Sincronizando catálogo CITEL → Supabase..."):
-                            _ok_s, _msg_s = _scs.main(force=True)
-                        if _ok_s:
-                            st.success(f"✅ CITEL sincronizado — {_msg_s}")
-                            try:
-                                import db as _db
-                                _db.clear_disk_cache()
-                                st.cache_data.clear()
-                                st.cache_resource.clear()
-                            except Exception:
-                                pass
-                        else:
-                            st.caption(f"ℹ️ Sync CITEL indisponível neste ambiente: {_msg_s}")
-                    except Exception as _e_scs:
-                        st.caption(f"ℹ️ Sync CITEL não executado: {_e_scs}")
 
                     st.toast("Tabela atualizada!", icon="🎨")
                     st.session_state[_IMPORT_DONE] = True

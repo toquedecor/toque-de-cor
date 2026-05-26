@@ -85,6 +85,72 @@ def _upsert_supabase(sb, rows: list[dict]) -> None:
     print()
 
 
+# ── Re-enriquecimento do catálogo após sync CITEL ─────────────────────────────
+def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
+    """
+    Atualiza as colunas CITEL (cod_citel, marca, grupo, descricao_db, desc_final)
+    no catálogo para todos os SKUs presentes em citel_lookup.
+    Chamado após cada sync bem-sucedido para garantir que novos itens CITEL
+    apareçam no catálogo sem precisar subir um novo Excel.
+
+    citel_lookup = {cod_fab: {cod_citel, marca, grupo, descricao_db}}
+    Retorna o número de linhas do catálogo efetivamente atualizadas.
+    """
+    if not citel_lookup:
+        return 0
+
+    skus = list(citel_lookup.keys())
+    updated = 0
+
+    # Busca linhas do catálogo para esses SKUs em lotes de 500
+    PAGE = 500
+    for i in range(0, len(skus), PAGE):
+        batch_skus = skus[i:i + PAGE]
+        r = (
+            sb.table("catalogo")
+            .select("id,cod_sku,descricao,cor,cod_citel,descricao_db,marca,grupo,desc_final")
+            .in_("cod_sku", batch_skus)
+            .execute()
+        )
+        rows = r.data or []
+
+        to_update = []
+        for row in rows:
+            citel = citel_lookup.get(str(row["cod_sku"]).strip())
+            if not citel:
+                continue
+
+            new_cod_citel    = str(citel.get("cod_citel") or "").strip()
+            new_marca        = str(citel.get("marca") or "").strip()
+            new_grupo        = str(citel.get("grupo") or "").strip()
+            # descricao_db: usa o do CITEL; se vazio, mantém descricao original como fallback
+            new_descricao_db = str(citel.get("descricao_db") or "").strip() or str(row.get("descricao") or "").strip()
+            cor              = str(row.get("cor") or "").strip()
+            new_desc_final   = (new_descricao_db + " — " + cor) if cor else new_descricao_db
+
+            # Só inclui no batch se algum campo realmente mudou
+            if (str(row.get("cod_citel") or "").strip()    != new_cod_citel    or
+                    str(row.get("marca") or "").strip()        != new_marca        or
+                    str(row.get("grupo") or "").strip()        != new_grupo        or
+                    str(row.get("descricao_db") or "").strip() != new_descricao_db or
+                    str(row.get("desc_final") or "").strip()   != new_desc_final):
+                to_update.append({
+                    "id":           row["id"],
+                    "cod_citel":    new_cod_citel,
+                    "marca":        new_marca,
+                    "grupo":        new_grupo,
+                    "descricao_db": new_descricao_db,
+                    "desc_final":   new_desc_final,
+                })
+
+        if to_update:
+            for j in range(0, len(to_update), BATCH):
+                sb.table("catalogo").upsert(to_update[j:j + BATCH]).execute()
+            updated += len(to_update)
+
+    return updated
+
+
 # ── Remover SKUs que sumiram do CITEL ─────────────────────────────────────────
 def _remove_obsoletos(sb, skus_citel: set) -> int:
     """Remove registros que não existem mais no CITEL."""
@@ -231,13 +297,28 @@ def main(force: bool = False) -> tuple[bool, str]:
     skus_citel = {str(r["cod_fab"]).strip() for r in rows}
     removidos = _remove_obsoletos(sb, skus_citel)
 
-    # 7. Salva fingerprint e timestamp do sync
+    # 7. Re-enriquece catálogo com os dados CITEL atualizados
+    print("  Atualizando catálogo com dados CITEL novos/alterados...")
+    citel_lookup = {
+        str(r["cod_fab"]).strip(): {
+            "cod_citel":    str(r.get("cod_citel") or "").strip(),
+            "marca":        str(r.get("marca") or "").strip(),
+            "grupo":        str(r.get("grupo") or "").strip(),
+            "descricao_db": str(r.get("descricao_db") or "").strip(),
+        }
+        for r in rows
+    }
+    n_cat = _reenrich_catalogo(sb, citel_lookup)
+    if n_cat:
+        print(f"  {n_cat} linhas do catálogo atualizadas com dados CITEL.")
+
+    # 8. Salva fingerprint e timestamp do sync
     fp_novo = _fingerprint_citel()
     _set_config(sb, _FP_KEY, fp_novo)
     _set_config(sb, _TS_KEY, datetime.now(timezone.utc).isoformat())
 
     n_dedup = len({str(r["cod_fab"]).strip() for r in rows})
-    resumo = f"{n_dedup} produtos sincronizados, {removidos} removidos"
+    resumo = f"{n_dedup} produtos sincronizados, {removidos} removidos" + (f", {n_cat} linhas do catálogo atualizadas" if n_cat else "")
     print(f"  Sync concluido: {resumo}.")
     print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Pronto!")
     return True, resumo
