@@ -93,9 +93,17 @@ def render(
     # Lê status do BD do session_state (populado na sidebar, sem nova chamada HTTP)
     db_ok = st.session_state.get("sidebar_db_ok", True)
 
-    if not src or not Path(src).exists():
+    # Quando o catálogo está no Supabase, o Excel local não é necessário
+    from db_supabase import catalogo_disponivel as _catalogo_disp
+    _usar_supabase = _catalogo_disp()
+
+    if not _usar_supabase and (not src or not Path(src).exists()):
         st.info("Nenhuma tabela carregada. Solicite ao administrador que importe o arquivo Excel.")
         return
+
+    # No fast-path (Supabase), src pode ser None — passa string vazia para get_enriched
+    if not src or not Path(src).exists():
+        src = ""
 
     # ── Carrega similares cadastrados ────────────────────────────────────────
     import json as _json
