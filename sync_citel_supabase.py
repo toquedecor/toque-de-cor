@@ -49,43 +49,90 @@ _UF_EMPRESAS = {
 
 
 def _fetch_citel() -> list[dict]:
-    """Busca todos os produtos do CITEL com MARCA, GRUPO, EMBALAGEM e PREÇO DE CUSTO por UF."""
-    # Subquery para o último preço de custo por empresa(s) de cada UF
-    def _subq(empresas: tuple) -> str:
-        codes = ",".join(f"'{e}'" for e in empresas)
-        return (
-            f"(SELECT i.ITE_PRECUS FROM ITEGER i "
-            f" WHERE CAST(i.ITE_CODFAB AS CHAR) = CAST(c.ITE_CODFAB AS CHAR) "
-            f" AND i.ITE_CODEMP IN ({codes}) "
-            f" ORDER BY i.ITE_DTAULT DESC LIMIT 1)"
-        )
+    """
+    Busca todos os produtos do CITEL com MARCA, GRUPO, EMBALAGEM e PREÇO DE CUSTO por UF.
 
-    sql = f"""
-        SELECT
-            CAST(c.ITE_CODFAB  AS CHAR)  AS cod_fab,
-            c.ITE_CODITE                 AS cod_citel,
-            c.ITE_DESITE                 AS descricao_db,
-            COALESCE(m.MAR_DESMAR, '')   AS marca,
-            COALESCE(g.GRU_DESGRU, '')   AS grupo,
-            COALESCE(u.UNI_SIGUNI, '')   AS embalagem_db,
-            {_subq(_UF_EMPRESAS['rn'])}  AS preco_compra_rn,
-            {_subq(_UF_EMPRESAS['ba'])}  AS preco_compra_ba,
-            {_subq(_UF_EMPRESAS['pe'])}  AS preco_compra_pe,
-            {_subq(_UF_EMPRESAS['al'])}  AS preco_compra_al,
-            {_subq(_UF_EMPRESAS['pb'])}  AS preco_compra_pb
-        FROM CADITE c
-        LEFT JOIN CADMAR m ON c.ITE_CODMAR = m.MAR_CODMAR
-        LEFT JOIN CADGRU g ON c.ITE_CODGRU = g.GRU_CODGRU
-        LEFT JOIN CADUNI u ON c.ITE_UNICOM  = u.UNI_CODUNI
+    Estratégia de 2 queries para evitar 5 subqueries correlacionadas lentas:
+      1. CADITE + CADMAR + CADGRU + CADUNI  → dados cadastrais de cada item
+      2. ITEGER (todas as empresas de todas as UFs) → preços por empresa
+    Depois junta no Python: para cada item, pega o preço mais recente por UF.
     """
     conn = _citel_conn()
     try:
+        # ── Query 1: Cadastro de itens ────────────────────────────────────────
+        sql_cadite = """
+            SELECT
+                CAST(c.ITE_CODFAB AS CHAR) AS cod_fab,
+                c.ITE_CODITE               AS cod_citel,
+                c.ITE_DESITE               AS descricao_db,
+                COALESCE(m.MAR_DESMAR, '') AS marca,
+                COALESCE(g.GRU_DESGRU, '') AS grupo,
+                COALESCE(u.UNI_SIGUNI, '') AS embalagem_db
+            FROM CADITE c
+            LEFT JOIN CADMAR m ON c.ITE_CODMAR = m.MAR_CODMAR
+            LEFT JOIN CADGRU g ON c.ITE_CODGRU = g.GRU_CODGRU
+            LEFT JOIN CADUNI u ON c.ITE_UNICOM  = u.UNI_CODUNI
+        """
         with conn.cursor() as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
-        return rows
+            cur.execute(sql_cadite)
+            cadite_rows = cur.fetchall()
+
+        # ── Query 2: Preços de custo por empresa ──────────────────────────────
+        # Reúne todas as empresas de todas as UFs
+        todas_empresas = sorted(set(
+            e for emps in _UF_EMPRESAS.values() for e in emps
+        ))
+        codes_str = ",".join(f"'{e}'" for e in todas_empresas)
+        sql_iteger = f"""
+            SELECT ITE_CODITE, ITE_CODEMP, ITE_PRECUS, ITE_DTAULT
+            FROM ITEGER
+            WHERE ITE_CODEMP IN ({codes_str})
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql_iteger)
+            iteger_rows = cur.fetchall()
     finally:
         conn.close()
+
+    # ── Monta lookup: cod_citel → {empresa: (data, preco)} ───────────────────
+    # Para cada item+empresa, guarda o registro com a data mais recente
+    preco_lookup: dict[str, dict[str, tuple]] = {}  # {cod_citel: {emp: (dt, preco)}}
+    for row in iteger_rows:
+        cit  = str(row["ITE_CODITE"]).strip()
+        emp  = str(row["ITE_CODEMP"]).strip()
+        prec = float(row["ITE_PRECUS"] or 0)
+        dt   = row["ITE_DTAULT"]  # pode ser None
+        prev = preco_lookup.setdefault(cit, {}).get(emp)
+        # Prefere data mais recente; None é "mais antigo" que qualquer data
+        if prev is None or (dt is not None and (prev[0] is None or dt > prev[0])):
+            preco_lookup[cit][emp] = (dt, prec)
+
+    def _uf_preco(cod_citel: str, empresas: tuple) -> float:
+        """Retorna o preço mais recente entre todas as empresas de uma UF."""
+        cit_data = preco_lookup.get(str(cod_citel).strip(), {})
+        melhor_dt: object = None
+        melhor_preco: float = 0.0
+        for emp in empresas:
+            entry = cit_data.get(emp)
+            if entry is None:
+                continue
+            dt, prec = entry
+            if melhor_dt is None or (dt is not None and (melhor_dt is None or dt > melhor_dt)):
+                melhor_dt = dt
+                melhor_preco = prec
+        return melhor_preco
+
+    # ── Combina os dados ──────────────────────────────────────────────────────
+    result = []
+    for row in cadite_rows:
+        cit = row["cod_citel"]
+        row["preco_compra_rn"] = _uf_preco(cit, _UF_EMPRESAS["rn"])
+        row["preco_compra_ba"] = _uf_preco(cit, _UF_EMPRESAS["ba"])
+        row["preco_compra_pe"] = _uf_preco(cit, _UF_EMPRESAS["pe"])
+        row["preco_compra_al"] = _uf_preco(cit, _UF_EMPRESAS["al"])
+        row["preco_compra_pb"] = _uf_preco(cit, _UF_EMPRESAS["pb"])
+        result.append(row)
+    return result
 
 
 # ── Upsert no Supabase ────────────────────────────────────────────────────────
@@ -129,10 +176,17 @@ _UF_PRECO_KEY = {
 
 
 # ── Re-enriquecimento do catálogo após sync CITEL ─────────────────────────────
+_BASE_CAT_COLS  = ("id,uf,cod_sku,linha,descricao,embalagem,cor,preco,"
+                   "cod_citel,descricao_db,marca,grupo,desc_final")
+_EXTRA_CAT_COLS = "embalagem_db,preco_compra"
+
+
 def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
     """
     Atualiza as colunas CITEL no catálogo: cod_citel, marca, grupo, descricao_db,
     desc_final, embalagem_db, embalagem (se vazia) e preco_compra (por UF).
+
+    Processa UF por UF para nunca exceder 1000 rows por SELECT (limite PostgREST).
 
     citel_lookup = {
         cod_fab: {
@@ -146,79 +200,109 @@ def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
     if not citel_lookup:
         return 0
 
-    skus = list(citel_lookup.keys())
+    skus = [s for s in citel_lookup.keys() if s and s != "None"]
     updated = 0
+    has_extra = True   # tenta com embalagem_db,preco_compra; cai p/ base se 42703
 
+    # Processa UF por UF: cada batch de PAGE skus retorna no máximo PAGE rows
+    # (1 por SKU por UF), evitando o limite de 1000 rows do PostgREST.
     PAGE = 500
-    for i in range(0, len(skus), PAGE):
-        batch_skus = skus[i:i + PAGE]
-        r = (
-            sb.table("catalogo")
-            .select(
-                "id,uf,cod_sku,descricao,embalagem,cor,"
-                "cod_citel,descricao_db,marca,grupo,desc_final,"
-                "embalagem_db,preco_compra"
-            )
-            .in_("cod_sku", batch_skus)
-            .execute()
-        )
-        rows = r.data or []
+    for uf_upper in ("RN", "BA", "PE", "AL", "PB"):
+        uf_lower  = uf_upper.lower()
+        preco_key = _UF_PRECO_KEY.get(uf_lower)
+        for i in range(0, len(skus), PAGE):
+            batch_skus = skus[i:i + PAGE]
 
-        to_update = []
-        for row in rows:
-            citel = citel_lookup.get(str(row["cod_sku"]).strip())
-            if not citel:
-                continue
+            # Two-pass SELECT: com colunas extras → sem, se coluna não existir ainda
+            rows: list[dict] = []
+            for attempt in range(2):
+                select_cols = (_BASE_CAT_COLS + "," + _EXTRA_CAT_COLS
+                               if has_extra else _BASE_CAT_COLS)
+                try:
+                    r = (
+                        sb.table("catalogo")
+                        .select(select_cols)
+                        .eq("uf", uf_upper)
+                        .in_("cod_sku", batch_skus)
+                        .execute()
+                    )
+                    rows = r.data or []
+                    break
+                except Exception as ex:
+                    err = str(ex)
+                    if ("42703" in err or "does not exist" in err) and has_extra:
+                        has_extra = False
+                        continue   # retry sem extras
+                    rows = []
+                    break
 
-            uf_lower          = str(row.get("uf") or "").lower()
-            preco_key         = _UF_PRECO_KEY.get(uf_lower)
-            new_preco_compra  = float(citel.get(preco_key) or 0) if preco_key else 0.0
+            to_update = []
+            for row in rows:
+                # Pula rows corrompidas (NOT NULL violadas por sync anterior)
+                if not row.get("uf") or not row.get("cod_sku"):
+                    continue
 
-            new_embalagem_db  = str(citel.get("embalagem_db") or "").strip()
-            old_embalagem     = str(row.get("embalagem") or "").strip()
-            # Excel tem supremacia: só preenche embalagem se estiver vazia
-            new_embalagem     = old_embalagem if old_embalagem else new_embalagem_db
+                citel = citel_lookup.get(str(row["cod_sku"]).strip())
+                if not citel:
+                    continue
 
-            new_cod_citel     = str(citel.get("cod_citel") or "").strip()
-            new_marca         = str(citel.get("marca") or "").strip()
-            new_grupo         = str(citel.get("grupo") or "").strip()
-            new_descricao_db  = (
-                str(citel.get("descricao_db") or "").strip()
-                or str(row.get("descricao") or "").strip()
-            )
-            cor               = str(row.get("cor") or "").strip()
-            new_desc_final    = (new_descricao_db + " — " + cor) if cor else new_descricao_db
+                new_preco_compra  = float(citel.get(preco_key) or 0) if preco_key else 0.0
 
-            old_preco_compra  = float(row.get("preco_compra") or 0)
-            old_embalagem_db  = str(row.get("embalagem_db") or "").strip()
+                new_embalagem_db  = str(citel.get("embalagem_db") or "").strip()
+                old_embalagem     = str(row.get("embalagem") or "").strip()
+                # Excel tem supremacia: só preenche embalagem se estiver vazia
+                new_embalagem     = old_embalagem if old_embalagem else new_embalagem_db
 
-            changed = (
-                str(row.get("cod_citel") or "").strip()    != new_cod_citel    or
-                str(row.get("marca") or "").strip()        != new_marca        or
-                str(row.get("grupo") or "").strip()        != new_grupo        or
-                str(row.get("descricao_db") or "").strip() != new_descricao_db or
-                str(row.get("desc_final") or "").strip()   != new_desc_final   or
-                old_embalagem_db                           != new_embalagem_db or
-                old_embalagem                              != new_embalagem    or
-                abs(old_preco_compra - new_preco_compra)   > 0.0001
-            )
-            if changed:
-                to_update.append({
-                    "id":            row["id"],
-                    "cod_citel":     new_cod_citel,
-                    "marca":         new_marca,
-                    "grupo":         new_grupo,
-                    "descricao_db":  new_descricao_db,
-                    "desc_final":    new_desc_final,
-                    "embalagem_db":  new_embalagem_db,
-                    "embalagem":     new_embalagem,
-                    "preco_compra":  new_preco_compra,
-                })
+                new_cod_citel     = str(citel.get("cod_citel") or "").strip()
+                new_marca         = str(citel.get("marca") or "").strip()
+                new_grupo         = str(citel.get("grupo") or "").strip()
+                new_descricao_db  = (
+                    str(citel.get("descricao_db") or "").strip()
+                    or str(row.get("descricao") or "").strip()
+                )
+                cor               = str(row.get("cor") or "").strip()
+                new_desc_final    = (new_descricao_db + " \u2014 " + cor) if cor else new_descricao_db
 
-        if to_update:
-            for j in range(0, len(to_update), BATCH):
-                sb.table("catalogo").upsert(to_update[j:j + BATCH]).execute()
-            updated += len(to_update)
+                old_preco_compra  = float(row.get("preco_compra") or 0) if has_extra else 0.0
+                old_embalagem_db  = str(row.get("embalagem_db") or "").strip() if has_extra else ""
+
+                changed = (
+                    str(row.get("cod_citel") or "").strip()    != new_cod_citel    or
+                    str(row.get("marca") or "").strip()        != new_marca        or
+                    str(row.get("grupo") or "").strip()        != new_grupo        or
+                    str(row.get("descricao_db") or "").strip() != new_descricao_db or
+                    str(row.get("desc_final") or "").strip()   != new_desc_final   or
+                    old_embalagem_db                           != new_embalagem_db or
+                    old_embalagem                              != new_embalagem    or
+                    abs(old_preco_compra - new_preco_compra)   > 0.0001
+                )
+                if changed:
+                    to_update.append({
+                        # Colunas NOT NULL — devem ser preservadas no upsert
+                        "id":            row["id"],
+                        "uf":            row["uf"],
+                        "cod_sku":       row["cod_sku"],
+                        "linha":         row.get("linha") or 0,
+                        "descricao":     row.get("descricao") or "",
+                        "cor":           row.get("cor") or "",
+                        "preco":         float(row.get("preco") or 0),
+                        # Colunas atualizadas pelo CITEL
+                        "cod_citel":     new_cod_citel,
+                        "marca":         new_marca,
+                        "grupo":         new_grupo,
+                        "descricao_db":  new_descricao_db,
+                        "desc_final":    new_desc_final,
+                        "embalagem_db":  new_embalagem_db,
+                        "embalagem":     new_embalagem,
+                        "preco_compra":  new_preco_compra,
+                    })
+
+            if to_update:
+                for j in range(0, len(to_update), BATCH):
+                    sb.table("catalogo").upsert(
+                        to_update[j:j + BATCH], on_conflict="id"
+                    ).execute()
+                updated += len(to_update)
 
     return updated
 
