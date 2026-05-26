@@ -76,15 +76,28 @@ def _enriquecer(df: pd.DataFrame, db: pd.DataFrame) -> pd.DataFrame:
 
 
 def _buscar_citel(skus: list) -> pd.DataFrame:
-    """Consulta o MySQL CITEL para enriquecer os dados."""
+    """Consulta o MySQL CITEL para enriquecer os dados.
+    Fallback: tabela citel_itens do Supabase (sincronizada diariamente).
+    """
     try:
         from db import query_items
         print("  Consultando MySQL CITEL...")
         df = query_items(skus)
-        print(f"  {len(df)} SKUs encontrados no CITEL.")
-        return df
+        if not df.empty:
+            print(f"  {len(df)} SKUs encontrados no CITEL.")
+            return df
+        raise ValueError("MySQL retornou DataFrame vazio")
     except Exception as e:
-        print(f"  ⚠️  CITEL indisponível ({e}) — importando sem enriquecimento.")
+        print(f"  ⚠️  CITEL MySQL indisponível ({e}) — tentando Supabase citel_itens...")
+        try:
+            from db_supabase import get_citel_itens
+            sb_df = get_citel_itens()
+            if not sb_df.empty:
+                print(f"  {len(sb_df)} SKUs encontrados no Supabase citel_itens.")
+                return sb_df
+        except Exception as e2:
+            print(f"  ⚠️  Supabase citel_itens também indisponível ({e2}).")
+        print("  ⚠️  Importando sem enriquecimento CITEL.")
         return pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"])
 
 
