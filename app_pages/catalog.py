@@ -168,6 +168,7 @@ def render(
         words = busca.upper().split()
         combined = (
             filtered["COD_SKU"].astype(str) + " " +
+            filtered["COD_CITEL"].astype(str) + " " +
             filtered["DESC_FINAL"].astype(str) + " " +
             filtered["MARCA"].astype(str) + " " +
             filtered["GRUPO"].astype(str) + " " +

@@ -334,6 +334,7 @@ with tab_sim:
             words_sim = busca_sim.upper().split()
             combined_sim = (
                 filtered["COD_SKU"].astype(str) + " " +
+                filtered["COD_CITEL"].astype(str) + " " +
                 filtered["DESC_FINAL"].astype(str) + " " +
                 filtered["MARCA"].astype(str) + " " +
                 filtered["GRUPO"].astype(str) + " " +
