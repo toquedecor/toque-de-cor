@@ -131,11 +131,16 @@ def get_enriched(path: str, uf: str) -> pd.DataFrame:
 
     # ── Fast path: Supabase ───────────────────────────────────────────────────
     if catalogo_disponivel():
-        df = get_catalogo_uf(uf)
+        try:
+            df = get_catalogo_uf(uf)
+        except Exception:
+            # Supabase indisponível: se não há Excel, re-propaga para NÃO cachear
+            if not path:
+                raise
+            df = pd.DataFrame()  # tenta o fallback Excel
         if not df.empty:
             return df
-        # Supabase disponível mas sem dados para esta UF —
-        # só cai no fallback Excel se houver um arquivo válido
+        # df.empty: UF sem dados — retorna vazio se não há Excel
         if not path:
             return pd.DataFrame(columns=_EMPTY_COLS)
 
@@ -173,12 +178,14 @@ def get_enriched(path: str, uf: str) -> pd.DataFrame:
 def get_product_opcoes(path: str) -> list:
     # Fast path: Supabase já tem MARCA e DESCRICAO_DB merged
     if catalogo_disponivel():
-        df_ref = get_catalogo_uf(STATES[0])
-        if df_ref.empty:
-            for _uf in STATES[1:]:
+        df_ref = pd.DataFrame()
+        for _uf in STATES:
+            try:
                 df_ref = get_catalogo_uf(_uf)
                 if not df_ref.empty:
                     break
+            except Exception:
+                continue
         if not df_ref.empty:
             skus_df = df_ref.drop_duplicates("COD_SKU")[["COD_SKU","DESCRICAO","DESCRICAO_DB","MARCA"]].copy()
             skus_df["DESCRICAO_DB"] = skus_df["DESCRICAO_DB"].fillna("").astype(str)
@@ -217,7 +224,10 @@ def get_states_indexed(path: str) -> dict:
     if catalogo_disponivel():
         result = {}
         for _uf in STATES:
-            df = get_catalogo_uf(_uf)
+            try:
+                df = get_catalogo_uf(_uf)
+            except Exception:
+                continue
             if not df.empty:
                 result[_uf] = df.drop_duplicates("COD_SKU", keep="first").set_index("COD_SKU")[["PRECO","EMBALAGEM"]]
         if result:
@@ -234,7 +244,10 @@ def get_states_indexed(path: str) -> dict:
 def get_db_lookup(path: str) -> dict:
     # Fast path: Supabase já tem os dados CITEL merged no catálogo
     if catalogo_disponivel():
-        df_ref = get_catalogo_uf(STATES[0])
+        try:
+            df_ref = get_catalogo_uf(STATES[0])
+        except Exception:
+            df_ref = pd.DataFrame()
         if not df_ref.empty:
             cols = [c for c in ["MARCA","DESCRICAO_DB","GRUPO"] if c in df_ref.columns]
             return df_ref.drop_duplicates("COD_SKU").set_index("COD_SKU")[cols].to_dict("index")
@@ -371,7 +384,10 @@ if "caches_warmed" not in st.session_state:
             for _i, _uf in enumerate(_STATES_W):
                 _prog.progress(10 + int(_i / _n * 80),
                                text=f"Carregando {_uf}... ({_i + 1}/{_n})")
-                get_catalogo_uf(_uf)
+                try:
+                    get_catalogo_uf(_uf)
+                except Exception:
+                    pass  # RuntimeError não bloqueia o carregamento
                 _prog.progress(10 + int((_i + 1) / _n * 80),
                                text=f"✔ {_uf} carregado ({_i + 1}/{_n})")
                 _status.caption(f"📦 **{_uf}** carregado")

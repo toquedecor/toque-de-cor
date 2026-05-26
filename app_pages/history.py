@@ -141,7 +141,10 @@ def render():
             )
 
             # Carrega preços da UF selecionada (já está em cache — sem HTTP extra)
-            _df_cat   = get_catalogo_uf(_nova_uf)
+            try:
+                _df_cat = get_catalogo_uf(_nova_uf)
+            except Exception:
+                _df_cat = pd.DataFrame()
             _preco_map = {}
             if _df_cat is not None and not _df_cat.empty:
                 _preco_map = dict(zip(

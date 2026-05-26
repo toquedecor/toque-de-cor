@@ -389,35 +389,59 @@ def get_catalogo_uf(uf: str) -> "pd.DataFrame":
     Retorna todos os produtos de uma UF a partir do Supabase.
     Resultado mantido em memória (@cache_resource) — zero latência após 1ª carga.
     Faz paginação automática para contornar o limite de 1000 rows do PostgREST.
+
+    IMPORTANTE: levanta RuntimeError em caso de falha de conexão para que
+    @st.cache_resource NÃO armazene o resultado vazio — a próxima chamada retentará.
     """
     import pandas as pd
     sb = get_supabase()
     if not sb:
-        return pd.DataFrame()
+        raise RuntimeError("Supabase indisponível — cliente não inicializado")
 
     PAGE = 1000
-    rows: list[dict] = []
-    offset = 0
-    while True:
-        try:
-            r = (
-                sb.table("catalogo")
-                .select("linha,cod_sku,descricao,embalagem,cor,preco,cod_citel,descricao_db,marca,grupo,desc_final,embalagem_db,preco_compra")
-                .eq("uf", uf)
-                .order("linha")
-                .range(offset, offset + PAGE - 1)
-                .execute()
-            )
-            batch = r.data or []
-            rows.extend(batch)
-            if len(batch) < PAGE:
-                break
-            offset += PAGE
-        except Exception:
-            break
+
+    # Tenta primeiro com colunas extras; se não existirem, usa só as base
+    BASE_COLS  = "linha,cod_sku,descricao,embalagem,cor,preco,cod_citel,descricao_db,marca,grupo,desc_final"
+    EXTRA_COLS = "embalagem_db,preco_compra"
+    has_extra  = True  # assume que existem; ajusta se der erro 42703
+
+    for attempt in range(2):
+        select_cols = f"{BASE_COLS},{EXTRA_COLS}" if has_extra else BASE_COLS
+        rows: list[dict] = []
+        offset = 0
+        _col_missing = False
+        while True:
+            try:
+                r = (
+                    sb.table("catalogo")
+                    .select(select_cols)
+                    .eq("uf", uf)
+                    .order("linha")
+                    .range(offset, offset + PAGE - 1)
+                    .execute()
+                )
+                batch = r.data or []
+                rows.extend(batch)
+                if len(batch) < PAGE:
+                    break
+                offset += PAGE
+            except Exception as _exc:
+                err_msg = str(_exc)
+                if "42703" in err_msg or "does not exist" in err_msg:
+                    # Coluna inexistente: tenta de novo sem as extras
+                    _col_missing = True
+                    break
+                if not rows:
+                    raise RuntimeError(f"Falha ao carregar catálogo UF={uf}") from _exc
+                break  # dados parciais: retorna o que foi obtido
+
+        if _col_missing and has_extra:
+            has_extra = False
+            continue  # tenta novamente com BASE_COLS apenas
+        break  # sucesso (com ou sem extras)
 
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame()  # UF vazia — resultado legítimo, pode cachear
 
     df = pd.DataFrame(rows)
     df.rename(columns={
@@ -436,9 +460,14 @@ def get_catalogo_uf(uf: str) -> "pd.DataFrame":
         "preco_compra":  "PRECO_COMPRA",
     }, inplace=True)
 
-    df["PRECO"]       = pd.to_numeric(df["PRECO"],       errors="coerce").fillna(0.0)
-    df["PRECO_COMPRA"]= pd.to_numeric(df["PRECO_COMPRA"], errors="coerce").fillna(0.0)
-    df["LINHA"]       = pd.to_numeric(df["LINHA"], errors="coerce").fillna(0).astype(int)
+    df["PRECO"] = pd.to_numeric(df["PRECO"], errors="coerce").fillna(0.0)
+    if "PRECO_COMPRA" in df.columns:
+        df["PRECO_COMPRA"] = pd.to_numeric(df["PRECO_COMPRA"], errors="coerce").fillna(0.0)
+    else:
+        df["PRECO_COMPRA"] = 0.0
+    if "EMBALAGEM_DB" not in df.columns:
+        df["EMBALAGEM_DB"] = ""
+    df["LINHA"] = pd.to_numeric(df["LINHA"], errors="coerce").fillna(0).astype(int)
     for col in ("COD_SKU","DESCRICAO","EMBALAGEM","COR","COD_CITEL","DESCRICAO_DB","MARCA","GRUPO","DESC_FINAL","EMBALAGEM_DB"):
         df[col] = df[col].fillna("").astype(str)
 

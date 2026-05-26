@@ -136,7 +136,11 @@ def render(
             pct = 0.0
             st.info("💡 Preços e descontos visíveis apenas para Supervisores e Administradores.")
 
-    rich   = get_enriched_fn(src, uf)
+    try:
+        rich   = get_enriched_fn(src, uf)
+    except Exception:
+        st.warning("⚠️ Catálogo temporariamente indisponível. Clique em **Recarregar BD** na barra lateral ou aguarde e recarregue a página.")
+        return
     factor = 1.0 - pct / 100.0
 
     # Aplica busca pendente ANTES do widget ser instanciado
