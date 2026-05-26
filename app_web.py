@@ -130,8 +130,15 @@ def get_enriched(path: str, uf: str) -> pd.DataFrame:
         df = get_catalogo_uf(uf)
         if not df.empty:
             return df
+        # Supabase disponível mas sem dados para esta UF —
+        # só cai no fallback Excel se houver um arquivo válido
+        if not path:
+            return df  # DataFrame vazio
 
     # ── Slow path: Excel + CITEL ──────────────────────────────────────────────
+    if not path:
+        return pd.DataFrame(columns=["COD_SKU","DESCRICAO","EMBALAGEM","COR","PRECO",
+                                     "COD_CITEL","DESCRICAO_DB","MARCA","GRUPO","DESC_FINAL"])
     raw = read_uf(path, uf)
     db  = get_db_data(path)
     result = raw.copy()
