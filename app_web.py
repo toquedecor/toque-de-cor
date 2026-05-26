@@ -125,6 +125,10 @@ def get_enriched(path: str, uf: str) -> pd.DataFrame:
     Fonte primária: Supabase (instantâneo).
     Fallback: Excel + MySQL (lento, só se Supabase vazio).
     """
+    _EMPTY_COLS = ["LINHA","COD_SKU","DESCRICAO","EMBALAGEM","COR","PRECO",
+                   "COD_CITEL","DESCRICAO_DB","MARCA","GRUPO","DESC_FINAL",
+                   "EMBALAGEM_DB","PRECO_COMPRA"]
+
     # ── Fast path: Supabase ───────────────────────────────────────────────────
     if catalogo_disponivel():
         df = get_catalogo_uf(uf)
@@ -133,12 +137,11 @@ def get_enriched(path: str, uf: str) -> pd.DataFrame:
         # Supabase disponível mas sem dados para esta UF —
         # só cai no fallback Excel se houver um arquivo válido
         if not path:
-            return df  # DataFrame vazio
+            return pd.DataFrame(columns=_EMPTY_COLS)
 
     # ── Slow path: Excel + CITEL ──────────────────────────────────────────────
     if not path:
-        return pd.DataFrame(columns=["COD_SKU","DESCRICAO","EMBALAGEM","COR","PRECO",
-                                     "COD_CITEL","DESCRICAO_DB","MARCA","GRUPO","DESC_FINAL"])
+        return pd.DataFrame(columns=_EMPTY_COLS)
     raw = read_uf(path, uf)
     db  = get_db_data(path)
     result = raw.copy()
