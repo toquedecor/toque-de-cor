@@ -74,11 +74,17 @@ CREATE TABLE IF NOT EXISTS auditoria (
 
 -- Espelho CITEL: sincronizado pelo GitHub Actions diariamente
 CREATE TABLE IF NOT EXISTS citel_itens (
-    cod_fab      TEXT PRIMARY KEY,
-    cod_citel    TEXT NOT NULL DEFAULT '',
-    descricao_db TEXT NOT NULL DEFAULT '',
-    marca        TEXT NOT NULL DEFAULT '',
-    grupo        TEXT NOT NULL DEFAULT '',
+    cod_fab          TEXT PRIMARY KEY,
+    cod_citel        TEXT NOT NULL DEFAULT '',
+    descricao_db     TEXT NOT NULL DEFAULT '',
+    marca            TEXT NOT NULL DEFAULT '',
+    grupo            TEXT NOT NULL DEFAULT '',
+    embalagem_db     TEXT NOT NULL DEFAULT '',
+    preco_compra_rn  NUMERIC(15,4) DEFAULT 0,
+    preco_compra_ba  NUMERIC(15,4) DEFAULT 0,
+    preco_compra_pe  NUMERIC(15,4) DEFAULT 0,
+    preco_compra_al  NUMERIC(15,4) DEFAULT 0,
+    preco_compra_pb  NUMERIC(15,4) DEFAULT 0,
     atualizado_em TIMESTAMPTZ DEFAULT NOW()
 );
 """
@@ -396,7 +402,7 @@ def get_catalogo_uf(uf: str) -> "pd.DataFrame":
         try:
             r = (
                 sb.table("catalogo")
-                .select("linha,cod_sku,descricao,embalagem,cor,preco,cod_citel,descricao_db,marca,grupo,desc_final")
+                .select("linha,cod_sku,descricao,embalagem,cor,preco,cod_citel,descricao_db,marca,grupo,desc_final,embalagem_db,preco_compra")
                 .eq("uf", uf)
                 .order("linha")
                 .range(offset, offset + PAGE - 1)
@@ -426,11 +432,14 @@ def get_catalogo_uf(uf: str) -> "pd.DataFrame":
         "marca":        "MARCA",
         "grupo":        "GRUPO",
         "desc_final":   "DESC_FINAL",
+        "embalagem_db": "EMBALAGEM_DB",
+        "preco_compra":  "PRECO_COMPRA",
     }, inplace=True)
 
-    df["PRECO"] = pd.to_numeric(df["PRECO"], errors="coerce").fillna(0.0)
-    df["LINHA"] = pd.to_numeric(df["LINHA"], errors="coerce").fillna(0).astype(int)
-    for col in ("COD_SKU","DESCRICAO","EMBALAGEM","COR","COD_CITEL","DESCRICAO_DB","MARCA","GRUPO","DESC_FINAL"):
+    df["PRECO"]       = pd.to_numeric(df["PRECO"],       errors="coerce").fillna(0.0)
+    df["PRECO_COMPRA"]= pd.to_numeric(df["PRECO_COMPRA"], errors="coerce").fillna(0.0)
+    df["LINHA"]       = pd.to_numeric(df["LINHA"], errors="coerce").fillna(0).astype(int)
+    for col in ("COD_SKU","DESCRICAO","EMBALAGEM","COR","COD_CITEL","DESCRICAO_DB","MARCA","GRUPO","DESC_FINAL","EMBALAGEM_DB"):
         df[col] = df[col].fillna("").astype(str)
 
     # UF não vem na query — adiciona
@@ -511,7 +520,9 @@ def get_citel_itens() -> "pd.DataFrame":
         try:
             r = (
                 sb.table("citel_itens")
-                .select("cod_fab,cod_citel,descricao_db,marca,grupo")
+                .select("cod_fab,cod_citel,descricao_db,marca,grupo,embalagem_db,"
+                        "preco_compra_rn,preco_compra_ba,preco_compra_pe,"
+                        "preco_compra_al,preco_compra_pb")
                 .range(offset, offset + PAGE - 1)
                 .execute()
             )
@@ -524,19 +535,33 @@ def get_citel_itens() -> "pd.DataFrame":
             break
 
     if not rows:
-        return pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"])
+        return pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO",
+                                     "EMBALAGEM_DB", "PRECO_COMPRA_RN", "PRECO_COMPRA_BA",
+                                     "PRECO_COMPRA_PE", "PRECO_COMPRA_AL", "PRECO_COMPRA_PB"])
 
     import pandas as pd
     df = pd.DataFrame(rows)
     df.rename(columns={
-        "cod_fab":      "COD_FAB",
-        "cod_citel":    "COD_CITEL",
-        "descricao_db": "DESCRICAO_DB",
-        "marca":        "MARCA",
-        "grupo":        "GRUPO",
+        "cod_fab":         "COD_FAB",
+        "cod_citel":       "COD_CITEL",
+        "descricao_db":    "DESCRICAO_DB",
+        "marca":           "MARCA",
+        "grupo":           "GRUPO",
+        "embalagem_db":    "EMBALAGEM_DB",
+        "preco_compra_rn": "PRECO_COMPRA_RN",
+        "preco_compra_ba": "PRECO_COMPRA_BA",
+        "preco_compra_pe": "PRECO_COMPRA_PE",
+        "preco_compra_al": "PRECO_COMPRA_AL",
+        "preco_compra_pb": "PRECO_COMPRA_PB",
     }, inplace=True)
-    for col in ("COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"):
+    for col in ("COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO", "EMBALAGEM_DB"):
         df[col] = df[col].fillna("").astype(str)
+    for col in ("PRECO_COMPRA_RN", "PRECO_COMPRA_BA", "PRECO_COMPRA_PE",
+                "PRECO_COMPRA_AL", "PRECO_COMPRA_PB"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        else:
+            df[col] = 0.0
     return df
 
 

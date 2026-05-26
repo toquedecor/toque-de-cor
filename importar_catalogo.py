@@ -26,8 +26,17 @@ STATES = ["RN", "BA", "PE", "AL", "PB"]
 BATCH  = 500   # linhas por requisição ao Supabase
 
 # Colunas consideradas para detectar alterações
-_COMPARE_COLS = ["descricao", "embalagem", "cor", "preco",
+_COMPARE_COLS = ["descricao", "embalagem", "embalagem_db", "cor", "preco", "preco_compra",
                  "cod_citel", "descricao_db", "marca", "grupo", "desc_final"]
+
+# Mapeamento UF → campo de preço de compra na tabela CITEL
+_UF_PRECO_COL = {
+    "RN": "PRECO_COMPRA_RN",
+    "BA": "PRECO_COMPRA_BA",
+    "PE": "PRECO_COMPRA_PE",
+    "AL": "PRECO_COMPRA_AL",
+    "PB": "PRECO_COMPRA_PB",
+}
 
 
 def _get_sb():
@@ -48,12 +57,16 @@ def _ler_uf(path: str, uf: str) -> pd.DataFrame:
     return df
 
 
-def _enriquecer(df: pd.DataFrame, db: pd.DataFrame) -> pd.DataFrame:
+def _enriquecer(df: pd.DataFrame, db: pd.DataFrame, uf: str = "") -> pd.DataFrame:
     result = df.copy()
+    uf_preco_col = _UF_PRECO_COL.get(uf.upper(), "") if uf else ""
     if not db.empty:
         merge_cols = ["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA"]
-        if "GRUPO" in db.columns:
-            merge_cols.append("GRUPO")
+        for opt in ("GRUPO", "EMBALAGEM_DB"):
+            if opt in db.columns:
+                merge_cols.append(opt)
+        if uf_preco_col and uf_preco_col in db.columns:
+            merge_cols.append(uf_preco_col)
         result = result.merge(
             db[merge_cols], left_on="COD_SKU", right_on="COD_FAB", how="left"
         ).drop(columns=["COD_FAB"])
@@ -61,8 +74,16 @@ def _enriquecer(df: pd.DataFrame, db: pd.DataFrame) -> pd.DataFrame:
         result["MARCA"]        = result["MARCA"].fillna("").astype(str)
         result["DESCRICAO_DB"] = result["DESCRICAO_DB"].fillna("").astype(str)
         result["GRUPO"]        = result.get("GRUPO", pd.Series("", index=result.index)).fillna("").astype(str)
+        result["EMBALAGEM_DB"] = result.get("EMBALAGEM_DB", pd.Series("", index=result.index)).fillna("").astype(str)
+        if uf_preco_col and uf_preco_col in result.columns:
+            result["PRECO_COMPRA"] = pd.to_numeric(result[uf_preco_col], errors="coerce").fillna(0.0)
+            result = result.drop(columns=[uf_preco_col], errors="ignore")
+        else:
+            result["PRECO_COMPRA"] = 0.0
     else:
-        result["COD_CITEL"] = result["MARCA"] = result["DESCRICAO_DB"] = result["GRUPO"] = ""
+        for col in ("COD_CITEL", "MARCA", "DESCRICAO_DB", "GRUPO", "EMBALAGEM_DB"):
+            result[col] = ""
+        result["PRECO_COMPRA"] = 0.0
 
     result["DESCRICAO_DB"] = np.where(
         result["DESCRICAO_DB"] != "", result["DESCRICAO_DB"], result["DESCRICAO"]
@@ -156,36 +177,69 @@ def _row_changed(old: dict, new: dict) -> bool:
     return False
 
 
-def _upload_uf(sb, uf: str, df: pd.DataFrame, existing: dict) -> dict:
+def _upload_uf(sb, uf: str, df: pd.DataFrame, existing: dict,
+               autcom_df: "pd.DataFrame | None" = None) -> dict:
     """
     Faz diff inteligente:
-      - Upsert nas linhas novas ou alteradas
-      - Delete nas linhas que sumiram do Excel
-    Recebe `existing` pré-buscado (via _fetch_all_parallel).
-    Retorna dict com estatísticas do diff.
+      - Upsert nas linhas novas ou alteradas (Excel + AUTCOM-only)
+      - Delete nas linhas que sumiram
+    autcom_df: itens do AUTCOM que não estão na planilha (pode ser None).
     """
     agora = datetime.now(timezone.utc).isoformat()
     existing_skus = set(existing.keys())
 
-    # 2. Monta novos dados
+    # 2. Monta novos dados (itens do Excel)
     new_data: dict = {}
     for _, row in df.iterrows():
         sku = str(row["COD_SKU"])
         new_data[sku] = {
-            "uf":           uf,
-            "linha":        int(row["LINHA"]),
-            "cod_sku":      sku,
-            "descricao":    str(row["DESCRICAO"]),
-            "embalagem":    str(row["EMBALAGEM"]),
-            "cor":          str(row["COR"]),
-            "preco":        float(row["PRECO"]),
-            "cod_citel":    str(row["COD_CITEL"]),
-            "descricao_db": str(row["DESCRICAO_DB"]),
-            "marca":        str(row["MARCA"]),
-            "grupo":        str(row["GRUPO"]),
-            "desc_final":   str(row["DESC_FINAL"]),
+            "uf":            uf,
+            "linha":         int(row["LINHA"]),
+            "cod_sku":       sku,
+            "descricao":     str(row["DESCRICAO"]),
+            "embalagem":     str(row["EMBALAGEM"]),
+            "embalagem_db":  str(row.get("EMBALAGEM_DB", "")),
+            "cor":           str(row["COR"]),
+            "preco":         float(row["PRECO"]),
+            "preco_compra":  float(row.get("PRECO_COMPRA", 0)),
+            "cod_citel":     str(row["COD_CITEL"]),
+            "descricao_db":  str(row["DESCRICAO_DB"]),
+            "marca":         str(row["MARCA"]),
+            "grupo":         str(row["GRUPO"]),
+            "desc_final":    str(row["DESC_FINAL"]),
             "atualizado_em": agora,
         }
+
+    # 2b. Adiciona itens AUTCOM-only (no CITEL mas não na planilha)
+    uf_preco_col = _UF_PRECO_COL.get(uf, "")
+    if autcom_df is not None and not autcom_df.empty and uf_preco_col:
+        excel_skus_uf = set(new_data.keys())
+        for _, row in autcom_df.iterrows():
+            sku = str(row["COD_FAB"]).strip()
+            if sku in excel_skus_uf:
+                continue  # Excel tem supremacia
+            preco_compra = float(row.get(uf_preco_col) or 0)
+            if preco_compra <= 0:
+                continue  # Sem preço de custo para este estado: omite
+            emb_db = str(row.get("EMBALAGEM_DB", "")).strip()
+            desc_db = str(row.get("DESCRICAO_DB", "")).strip()
+            new_data[sku] = {
+                "uf":            uf,
+                "linha":         999999,
+                "cod_sku":       sku,
+                "descricao":     desc_db,
+                "embalagem":     emb_db,
+                "embalagem_db":  emb_db,
+                "cor":           "",
+                "preco":         preco_compra,
+                "preco_compra":  preco_compra,
+                "cod_citel":     str(row.get("COD_CITEL", "")).strip(),
+                "descricao_db":  desc_db,
+                "marca":         str(row.get("MARCA", "")).strip(),
+                "grupo":         str(row.get("GRUPO", "")).strip(),
+                "desc_final":    desc_db,
+                "atualizado_em": agora,
+            }
     new_skus = set(new_data.keys())
 
     # 3. Diff
@@ -298,13 +352,21 @@ def importar(excel_path: str) -> dict:
     print("\n3. Buscando dados atuais no Supabase (paralelo)...")
     existing_all = _fetch_all_parallel()
 
-    # 4. Calcula diff e envia para Supabase
+    # 3b. Determina itens AUTCOM-only (presentes no CITEL mas ausentes da planilha)
+    autcom_df = None
+    if not db_df.empty and "PRECO_COMPRA_RN" in db_df.columns:
+        autcom_df = db_df[~db_df["COD_FAB"].isin(all_skus)].copy()
+        print(f"   Itens apenas no AUTCOM (sem planilha): {len(autcom_df)}")
+    else:
+        autcom_df = None
+
+    # 4. Enriquece e faz upload de cada UF
     print("\n4. Comparando e enviando para Supabase...")
     resultado: dict[str, dict] = {}
     totais = {"inseridos": 0, "atualizados": 0, "removidos": 0, "sem_alteracao": 0, "total": 0}
     for uf in STATES:
-        df_rich = _enriquecer(dfs[uf], db_df)
-        stats = _upload_uf(sb, uf, df_rich, existing_all[uf])
+        df_rich = _enriquecer(dfs[uf], db_df, uf)
+        stats = _upload_uf(sb, uf, df_rich, existing_all[uf], autcom_df)
         resultado[uf] = stats
         for k in totais:
             totais[k] += stats.get(k, 0)

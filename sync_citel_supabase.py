@@ -38,18 +38,45 @@ def _citel_conn():
     )
 
 
+# UF → empresa(s) no ITEGER
+_UF_EMPRESAS = {
+    "rn": ("017", "018", "019"),
+    "ba": ("009",),
+    "pe": ("001", "004", "005", "010", "011", "012", "013", "014", "015", "016"),
+    "al": ("002", "006"),
+    "pb": ("003", "007", "008"),
+}
+
+
 def _fetch_citel() -> list[dict]:
-    """Busca todos os produtos do CITEL com MARCA e GRUPO."""
-    sql = """
+    """Busca todos os produtos do CITEL com MARCA, GRUPO, EMBALAGEM e PREÇO DE CUSTO por UF."""
+    # Subquery para o último preço de custo por empresa(s) de cada UF
+    def _subq(empresas: tuple) -> str:
+        codes = ",".join(f"'{e}'" for e in empresas)
+        return (
+            f"(SELECT i.ITE_PRECUS FROM ITEGER i "
+            f" WHERE CAST(i.ITE_CODFAB AS CHAR) = CAST(c.ITE_CODFAB AS CHAR) "
+            f" AND i.ITE_CODEMP IN ({codes}) "
+            f" ORDER BY i.ITE_DTAULT DESC LIMIT 1)"
+        )
+
+    sql = f"""
         SELECT
-            CAST(c.ITE_CODFAB  AS CHAR) AS cod_fab,
-            c.ITE_CODITE                AS cod_citel,
-            c.ITE_DESITE                AS descricao_db,
-            COALESCE(m.MAR_DESMAR, '')  AS marca,
-            COALESCE(g.GRU_DESGRU, '')  AS grupo
+            CAST(c.ITE_CODFAB  AS CHAR)  AS cod_fab,
+            c.ITE_CODITE                 AS cod_citel,
+            c.ITE_DESITE                 AS descricao_db,
+            COALESCE(m.MAR_DESMAR, '')   AS marca,
+            COALESCE(g.GRU_DESGRU, '')   AS grupo,
+            COALESCE(u.UNI_SIGUNI, '')   AS embalagem_db,
+            {_subq(_UF_EMPRESAS['rn'])}  AS preco_compra_rn,
+            {_subq(_UF_EMPRESAS['ba'])}  AS preco_compra_ba,
+            {_subq(_UF_EMPRESAS['pe'])}  AS preco_compra_pe,
+            {_subq(_UF_EMPRESAS['al'])}  AS preco_compra_al,
+            {_subq(_UF_EMPRESAS['pb'])}  AS preco_compra_pb
         FROM CADITE c
         LEFT JOIN CADMAR m ON c.ITE_CODMAR = m.MAR_CODMAR
         LEFT JOIN CADGRU g ON c.ITE_CODGRU = g.GRU_CODGRU
+        LEFT JOIN CADUNI u ON c.ITE_UNICOM  = u.UNI_CODUNI
     """
     conn = _citel_conn()
     try:
@@ -67,12 +94,18 @@ def _upsert_supabase(sb, rows: list[dict]) -> None:
     seen: set = set()
     deduped: list[dict] = []
     for row in rows:
-        row["atualizado_em"] = agora
-        row["cod_fab"]       = str(row["cod_fab"]).strip()
-        row["cod_citel"]     = str(row.get("cod_citel") or "").strip()
-        row["descricao_db"]  = str(row.get("descricao_db") or "").strip()
-        row["marca"]         = str(row.get("marca") or "").strip()
-        row["grupo"]         = str(row.get("grupo") or "").strip()
+        row["atualizado_em"]    = agora
+        row["cod_fab"]          = str(row["cod_fab"]).strip()
+        row["cod_citel"]        = str(row.get("cod_citel") or "").strip()
+        row["descricao_db"]     = str(row.get("descricao_db") or "").strip()
+        row["marca"]            = str(row.get("marca") or "").strip()
+        row["grupo"]            = str(row.get("grupo") or "").strip()
+        row["embalagem_db"]     = str(row.get("embalagem_db") or "").strip()
+        row["preco_compra_rn"]  = float(row.get("preco_compra_rn") or 0)
+        row["preco_compra_ba"]  = float(row.get("preco_compra_ba") or 0)
+        row["preco_compra_pe"]  = float(row.get("preco_compra_pe") or 0)
+        row["preco_compra_al"]  = float(row.get("preco_compra_al") or 0)
+        row["preco_compra_pb"]  = float(row.get("preco_compra_pb") or 0)
         if row["cod_fab"] not in seen:
             seen.add(row["cod_fab"])
             deduped.append(row)
@@ -85,15 +118,29 @@ def _upsert_supabase(sb, rows: list[dict]) -> None:
     print()
 
 
+# Mapeamento UF → campo de preço de custo no citel_lookup
+_UF_PRECO_KEY = {
+    "rn": "preco_compra_rn",
+    "ba": "preco_compra_ba",
+    "pe": "preco_compra_pe",
+    "al": "preco_compra_al",
+    "pb": "preco_compra_pb",
+}
+
+
 # ── Re-enriquecimento do catálogo após sync CITEL ─────────────────────────────
 def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
     """
-    Atualiza as colunas CITEL (cod_citel, marca, grupo, descricao_db, desc_final)
-    no catálogo para todos os SKUs presentes em citel_lookup.
-    Chamado após cada sync bem-sucedido para garantir que novos itens CITEL
-    apareçam no catálogo sem precisar subir um novo Excel.
+    Atualiza as colunas CITEL no catálogo: cod_citel, marca, grupo, descricao_db,
+    desc_final, embalagem_db, embalagem (se vazia) e preco_compra (por UF).
 
-    citel_lookup = {cod_fab: {cod_citel, marca, grupo, descricao_db}}
+    citel_lookup = {
+        cod_fab: {
+            cod_citel, marca, grupo, descricao_db, embalagem_db,
+            preco_compra_rn, preco_compra_ba, preco_compra_pe,
+            preco_compra_al, preco_compra_pb
+        }
+    }
     Retorna o número de linhas do catálogo efetivamente atualizadas.
     """
     if not citel_lookup:
@@ -102,13 +149,16 @@ def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
     skus = list(citel_lookup.keys())
     updated = 0
 
-    # Busca linhas do catálogo para esses SKUs em lotes de 500
     PAGE = 500
     for i in range(0, len(skus), PAGE):
         batch_skus = skus[i:i + PAGE]
         r = (
             sb.table("catalogo")
-            .select("id,cod_sku,descricao,cor,cod_citel,descricao_db,marca,grupo,desc_final")
+            .select(
+                "id,uf,cod_sku,descricao,embalagem,cor,"
+                "cod_citel,descricao_db,marca,grupo,desc_final,"
+                "embalagem_db,preco_compra"
+            )
             .in_("cod_sku", batch_skus)
             .execute()
         )
@@ -120,27 +170,49 @@ def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
             if not citel:
                 continue
 
-            new_cod_citel    = str(citel.get("cod_citel") or "").strip()
-            new_marca        = str(citel.get("marca") or "").strip()
-            new_grupo        = str(citel.get("grupo") or "").strip()
-            # descricao_db: usa o do CITEL; se vazio, mantém descricao original como fallback
-            new_descricao_db = str(citel.get("descricao_db") or "").strip() or str(row.get("descricao") or "").strip()
-            cor              = str(row.get("cor") or "").strip()
-            new_desc_final   = (new_descricao_db + " — " + cor) if cor else new_descricao_db
+            uf_lower          = str(row.get("uf") or "").lower()
+            preco_key         = _UF_PRECO_KEY.get(uf_lower)
+            new_preco_compra  = float(citel.get(preco_key) or 0) if preco_key else 0.0
 
-            # Só inclui no batch se algum campo realmente mudou
-            if (str(row.get("cod_citel") or "").strip()    != new_cod_citel    or
-                    str(row.get("marca") or "").strip()        != new_marca        or
-                    str(row.get("grupo") or "").strip()        != new_grupo        or
-                    str(row.get("descricao_db") or "").strip() != new_descricao_db or
-                    str(row.get("desc_final") or "").strip()   != new_desc_final):
+            new_embalagem_db  = str(citel.get("embalagem_db") or "").strip()
+            old_embalagem     = str(row.get("embalagem") or "").strip()
+            # Excel tem supremacia: só preenche embalagem se estiver vazia
+            new_embalagem     = old_embalagem if old_embalagem else new_embalagem_db
+
+            new_cod_citel     = str(citel.get("cod_citel") or "").strip()
+            new_marca         = str(citel.get("marca") or "").strip()
+            new_grupo         = str(citel.get("grupo") or "").strip()
+            new_descricao_db  = (
+                str(citel.get("descricao_db") or "").strip()
+                or str(row.get("descricao") or "").strip()
+            )
+            cor               = str(row.get("cor") or "").strip()
+            new_desc_final    = (new_descricao_db + " — " + cor) if cor else new_descricao_db
+
+            old_preco_compra  = float(row.get("preco_compra") or 0)
+            old_embalagem_db  = str(row.get("embalagem_db") or "").strip()
+
+            changed = (
+                str(row.get("cod_citel") or "").strip()    != new_cod_citel    or
+                str(row.get("marca") or "").strip()        != new_marca        or
+                str(row.get("grupo") or "").strip()        != new_grupo        or
+                str(row.get("descricao_db") or "").strip() != new_descricao_db or
+                str(row.get("desc_final") or "").strip()   != new_desc_final   or
+                old_embalagem_db                           != new_embalagem_db or
+                old_embalagem                              != new_embalagem    or
+                abs(old_preco_compra - new_preco_compra)   > 0.0001
+            )
+            if changed:
                 to_update.append({
-                    "id":           row["id"],
-                    "cod_citel":    new_cod_citel,
-                    "marca":        new_marca,
-                    "grupo":        new_grupo,
-                    "descricao_db": new_descricao_db,
-                    "desc_final":   new_desc_final,
+                    "id":            row["id"],
+                    "cod_citel":     new_cod_citel,
+                    "marca":         new_marca,
+                    "grupo":         new_grupo,
+                    "descricao_db":  new_descricao_db,
+                    "desc_final":    new_desc_final,
+                    "embalagem_db":  new_embalagem_db,
+                    "embalagem":     new_embalagem,
+                    "preco_compra":  new_preco_compra,
                 })
 
         if to_update:
@@ -301,10 +373,16 @@ def main(force: bool = False) -> tuple[bool, str]:
     print("  Atualizando catálogo com dados CITEL novos/alterados...")
     citel_lookup = {
         str(r["cod_fab"]).strip(): {
-            "cod_citel":    str(r.get("cod_citel") or "").strip(),
-            "marca":        str(r.get("marca") or "").strip(),
-            "grupo":        str(r.get("grupo") or "").strip(),
-            "descricao_db": str(r.get("descricao_db") or "").strip(),
+            "cod_citel":       str(r.get("cod_citel") or "").strip(),
+            "marca":           str(r.get("marca") or "").strip(),
+            "grupo":           str(r.get("grupo") or "").strip(),
+            "descricao_db":    str(r.get("descricao_db") or "").strip(),
+            "embalagem_db":    str(r.get("embalagem_db") or "").strip(),
+            "preco_compra_rn": float(r.get("preco_compra_rn") or 0),
+            "preco_compra_ba": float(r.get("preco_compra_ba") or 0),
+            "preco_compra_pe": float(r.get("preco_compra_pe") or 0),
+            "preco_compra_al": float(r.get("preco_compra_al") or 0),
+            "preco_compra_pb": float(r.get("preco_compra_pb") or 0),
         }
         for r in rows
     }
