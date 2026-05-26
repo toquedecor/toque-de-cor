@@ -543,25 +543,38 @@ def get_citel_itens() -> "pd.DataFrame":
         return pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"])
 
     PAGE = 1000
-    rows = []
-    offset = 0
-    while True:
-        try:
-            r = (
-                sb.table("citel_itens")
-                .select("cod_fab,cod_citel,descricao_db,marca,grupo,embalagem_db,"
-                        "preco_compra_rn,preco_compra_ba,preco_compra_pe,"
-                        "preco_compra_al,preco_compra_pb")
-                .range(offset, offset + PAGE - 1)
-                .execute()
-            )
-            batch = r.data or []
-            rows.extend(batch)
-            if len(batch) < PAGE:
-                break
-            offset += PAGE
-        except Exception:
-            break
+    BASE_COLS  = "cod_fab,cod_citel,descricao_db,marca,grupo"
+    EXTRA_COLS = "embalagem_db,preco_compra_rn,preco_compra_ba,preco_compra_pe,preco_compra_al,preco_compra_pb"
+    has_extra  = True
+
+    for _attempt in range(2):
+        select_cols = f"{BASE_COLS},{EXTRA_COLS}" if has_extra else BASE_COLS
+        rows = []
+        offset = 0
+        _col_missing = False
+        while True:
+            try:
+                r = (
+                    sb.table("citel_itens")
+                    .select(select_cols)
+                    .range(offset, offset + PAGE - 1)
+                    .execute()
+                )
+                batch = r.data or []
+                rows.extend(batch)
+                if len(batch) < PAGE:
+                    break
+                offset += PAGE
+            except Exception as _exc:
+                err_msg = str(_exc)
+                if ("42703" in err_msg or "does not exist" in err_msg) and has_extra:
+                    _col_missing = True
+                    break
+                break  # outra falha: sai com o que foi obtido
+        if _col_missing:
+            has_extra = False
+            continue
+        break
 
     if not rows:
         return pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO",
@@ -583,8 +596,12 @@ def get_citel_itens() -> "pd.DataFrame":
         "preco_compra_al": "PRECO_COMPRA_AL",
         "preco_compra_pb": "PRECO_COMPRA_PB",
     }, inplace=True)
-    for col in ("COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO", "EMBALAGEM_DB"):
+    for col in ("COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"):
         df[col] = df[col].fillna("").astype(str)
+    if "EMBALAGEM_DB" in df.columns:
+        df["EMBALAGEM_DB"] = df["EMBALAGEM_DB"].fillna("").astype(str)
+    else:
+        df["EMBALAGEM_DB"] = ""
     for col in ("PRECO_COMPRA_RN", "PRECO_COMPRA_BA", "PRECO_COMPRA_PE",
                 "PRECO_COMPRA_AL", "PRECO_COMPRA_PB"):
         if col in df.columns:
