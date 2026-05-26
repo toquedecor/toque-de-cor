@@ -591,17 +591,25 @@ def set_codigo_usuario(login: str, codigo: str) -> tuple[bool, str]:
 
 
 def buscar_login_por_codigo(codigo: str) -> str:
-    """Retorna o login do operador associado ao código, ou '' se não encontrado."""
+    """Retorna o login do operador associado ao código, ou '' se não encontrado.
+    Normaliza a entrada para 3 dígitos com zero-padding (ex: '1' → '001').
+    """
     if not codigo:
         return ""
     sb = get_supabase()
     if not sb:
         return ""
+    # Normaliza: zero-pad até 3 dígitos se for numérico
+    codigo_norm = codigo.strip()
+    try:
+        codigo_norm = str(int(codigo_norm)).zfill(3)
+    except ValueError:
+        pass  # mantém original se não for numérico
     try:
         r = (
             sb.table("usuarios")
             .select("usuario")
-            .eq("codigo", codigo.strip())
+            .eq("codigo", codigo_norm)
             .eq("ativo", True)
             .limit(1)
             .execute()
