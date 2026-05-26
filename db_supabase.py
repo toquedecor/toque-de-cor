@@ -565,6 +565,63 @@ def get_citel_itens() -> "pd.DataFrame":
     return df
 
 
+# ── Código de operador (3 dígitos) na tabela usuarios ────────────────────────
+def get_codigo_usuario(login: str) -> str:
+    """Retorna o código de 3 dígitos do operador, ou '' se não configurado."""
+    sb = get_supabase()
+    if not sb:
+        return ""
+    try:
+        r = sb.table("usuarios").select("codigo").eq("usuario", login).single().execute()
+        return str(r.data.get("codigo") or "") if r.data else ""
+    except Exception:
+        return ""
+
+
+def set_codigo_usuario(login: str, codigo: str) -> tuple[bool, str]:
+    """Salva o código de 3 dígitos para o operador. Retorna (ok, mensagem)."""
+    sb = get_supabase()
+    if not sb:
+        return False, "Supabase indisponível"
+    try:
+        sb.table("usuarios").update({"codigo": codigo.strip()}).eq("usuario", login).execute()
+        return True, "Código salvo com sucesso"
+    except Exception as e:
+        return False, str(e)
+
+
+def buscar_login_por_codigo(codigo: str) -> str:
+    """Retorna o login do operador associado ao código, ou '' se não encontrado."""
+    if not codigo:
+        return ""
+    sb = get_supabase()
+    if not sb:
+        return ""
+    try:
+        r = (
+            sb.table("usuarios")
+            .select("usuario")
+            .eq("codigo", codigo.strip())
+            .eq("ativo", True)
+            .limit(1)
+            .execute()
+        )
+        return r.data[0]["usuario"] if r.data else ""
+    except Exception:
+        return ""
+
+
+def set_precisa_trocar_senha(login: str) -> None:
+    """Marca que o usuário deve trocar a senha no próximo login."""
+    sb = get_supabase()
+    if not sb:
+        return
+    try:
+        sb.table("usuarios").update({"precisa_trocar_senha": True}).eq("usuario", login).execute()
+    except Exception:
+        pass  # Coluna pode não existir — ignora silenciosamente
+
+
 # ── Disparo do GitHub Actions sync_citel.yml ─────────────────────────────────
 def dispatch_citel_sync(force: bool = False) -> tuple[bool, str]:
     """
