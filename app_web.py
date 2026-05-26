@@ -274,7 +274,9 @@ perfil = u.get("perfil", "vendedor")
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 # Renderiza SEMPRE primeiro — garante que o app aparece imediatamente após login.
 with st.sidebar:
-    st.image(str(BASE_DIR / "logo.png"), use_container_width=True)
+    _logo = BASE_DIR / "logo.png"
+    if _logo.exists():
+        st.image(str(_logo), use_container_width=True)
     st.markdown(f"**{u.get('nome', u.get('usuario',''))}**")
     st.caption(f"{auth.PERFIS.get(perfil, perfil)} · {u.get('loja','')}")
     st.divider()
@@ -340,7 +342,9 @@ if "caches_warmed" not in st.session_state:
     import time as _time
     _nome_u = u.get("nome", u.get("usuario", ""))
 
-    st.image(str(BASE_DIR / "logo.png"), width=280)
+    _logo = BASE_DIR / "logo.png"
+    if _logo.exists():
+        st.image(str(_logo), width=280)
     st.markdown(
         f"<p style='color:#aaa'>Bem-vindo(a), <b>{_nome_u}</b> — carregando catálogo...</p>",
         unsafe_allow_html=True,
