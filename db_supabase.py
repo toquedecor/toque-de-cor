@@ -120,6 +120,53 @@ def supabase_ok() -> bool:
         return False
 
 
+# ── Sessões autenticadas ──────────────────────────────────────────────────────
+def salvar_sessao(token: str, dados: dict) -> None:
+    """Persiste sessão no Supabase para sobreviver a reinicializações do servidor."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    sb = get_supabase()
+    if not sb:
+        return
+    try:
+        sb.table("sessoes").upsert({
+            "token": token,
+            "usuario": dados.get("usuario", ""),
+            "dados": json.dumps(dados, ensure_ascii=False),
+        }).execute()
+        # Limpeza de sessões antigas (>30 dias) a cada salvamento
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        sb.table("sessoes").delete().lt("criado_em", cutoff).execute()
+    except Exception:
+        pass
+
+
+def buscar_sessao(token: str) -> dict | None:
+    """Recupera sessão do Supabase pelo token (usado após reinicialização do servidor)."""
+    import json
+    sb = get_supabase()
+    if not sb:
+        return None
+    try:
+        r = sb.table("sessoes").select("dados").eq("token", token).single().execute()
+        if r.data:
+            return json.loads(r.data["dados"])
+    except Exception:
+        pass
+    return None
+
+
+def remover_sessao(token: str) -> None:
+    """Remove sessão do Supabase ao fazer logout."""
+    sb = get_supabase()
+    if not sb:
+        return
+    try:
+        sb.table("sessoes").delete().eq("token", token).execute()
+    except Exception:
+        pass
+
+
 # ── Configurações do sistema ─────────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def get_all_configs() -> dict:

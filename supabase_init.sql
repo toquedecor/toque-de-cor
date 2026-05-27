@@ -81,3 +81,15 @@ CREATE INDEX IF NOT EXISTS idx_pedidos_loja     ON pedidos(loja);
 CREATE INDEX IF NOT EXISTS idx_pedidos_status   ON pedidos(status);
 CREATE INDEX IF NOT EXISTS idx_pedido_itens_pid ON pedido_itens(pedido_id);
 CREATE INDEX IF NOT EXISTS idx_auditoria_usr    ON auditoria(usuario);
+
+-- ============================================================
+-- 7. Sessões autenticadas
+--    Persistem reinicializações do servidor (HuggingFace hiberna)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS sessoes (
+    token      TEXT PRIMARY KEY,
+    usuario    TEXT NOT NULL,
+    dados      TEXT NOT NULL,          -- JSON: nome, perfil, loja, uf
+    criado_em  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sessoes_usuario ON sessoes(usuario);
