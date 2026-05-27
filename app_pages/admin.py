@@ -57,7 +57,7 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
             _cols_disp = [c for c in ["nome", "perfil", "uf", "loja", "ativo"] if c in pd.DataFrame(usuarios).columns]
             df_usr = pd.DataFrame(usuarios)[_cols_disp]
             df_usr.columns = ["Nome", "Perfil", "UF", "Loja", "Ativo"][:len(_cols_disp)]
-            df_usr.insert(0, "Cód.", [get_codigo_usuario(u_["usuario"]) or "—" for u_ in usuarios])
+            df_usr.insert(0, "Cód.", [u_.get("codigo") or "—" for u_ in usuarios])
             st.dataframe(df_usr, hide_index=True, use_container_width=True)
         else:
             st.info("Nenhum usuário cadastrado ainda.")

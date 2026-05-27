@@ -111,7 +111,7 @@ def listar_usuarios() -> list[dict]:
     if not sb:
         return _usuarios_fallback()
     try:
-        r = sb.table("usuarios").select("id, usuario, nome, perfil, loja, uf, ativo").execute()
+        r = sb.table("usuarios").select("id, usuario, nome, perfil, loja, uf, ativo, codigo").execute()
         return r.data or []
     except Exception:
         return _usuarios_fallback()
