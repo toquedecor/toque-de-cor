@@ -39,7 +39,7 @@ _DB_CONFIG = {
     "connect_timeout":    10,
 }
 
-_EMPTY      = pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO"])
+_EMPTY      = pd.DataFrame(columns=["COD_FAB", "COD_CITEL", "DESCRICAO_DB", "MARCA", "GRUPO", "EMBALAGEM_DB"])
 # Cache gravável: usa DATA_DIR do launcher quando rodando como .app
 import os as _os
 _data_dir   = Path(_os.environ.get("TOQUEDECOR_DATA_DIR", "") or Path(__file__).parent)
@@ -135,12 +135,15 @@ def _fetch(skus_list: list) -> pd.DataFrame:
             c.ITE_CODITE                  AS COD_CITEL,
             c.ITE_DESITE                  AS DESCRICAO_DB,
             COALESCE(m.MAR_DESMAR, '')    AS MARCA,
-            COALESCE(g.GRU_DESGRU, '')    AS GRUPO
+            COALESCE(g.GRU_DESGRU, '')    AS GRUPO,
+            COALESCE(u.UNI_SIGUNI, '')    AS EMBALAGEM_DB
         FROM CADITE c
         LEFT JOIN CADMAR m
             ON c.ITE_CODMAR = m.MAR_CODMAR
         LEFT JOIN CADGRU g
             ON c.ITE_CODGRU = g.GRU_CODGRU
+        LEFT JOIN CADUNI u
+            ON c.ITE_UNICOM = u.UNI_CODUNI
         WHERE CAST(c.ITE_CODFAB AS CHAR) IN ({ph})
     """
     rows = _run(sql, [str(s) for s in skus_list])
