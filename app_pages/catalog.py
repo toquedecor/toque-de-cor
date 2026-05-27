@@ -33,6 +33,177 @@ from db_supabase import (
 STATES = ["RN", "BA", "PE", "AL", "PB"]
 
 
+@st.fragment
+def _render_editor(
+    uf: str,
+    qtd_key: str,
+    zerar_key: str,
+    aplc_key: str,
+    dlg_key: str,
+    sim_sup_key: str,
+    flt_cnt_key: str,
+    ver_preco: bool,
+    pct: float,
+    factor: float,
+    db_ok: bool,
+):
+    """
+    Renderiza o data_editor de quantidades como um fragmento independente.
+    On_change dispara rerun apenas do fragmento — o cursor no editor é preservado
+    ao pressionar Enter, sem reruns completos da página.
+    Botões Aplicar/Zerar usam st.rerun(scope='app') para atualizar o preview.
+    """
+    filtered    = st.session_state.get(f"_frag_filtered_{uf}", pd.DataFrame())
+    rich        = st.session_state.get(f"_frag_rich_{uf}",     pd.DataFrame())
+    _sim_lookup = st.session_state.get(f"_sim_lookup_{uf}",    {})
+
+    if filtered.empty or rich.empty:
+        return
+
+    qtd_map   = st.session_state[qtd_key]
+    sku_array = filtered["COD_SKU"].values
+
+    _tem_similar_na_lista = any(sku in _sim_lookup for sku in sku_array)
+    if _tem_similar_na_lista:
+        st.caption("💡 Linhas com 🔄 possuem similar — marque ☑ para ver o similar (abre janela, funciona em tela cheia).")
+
+    # ── Tabela principal (QTD editável + checkbox para ver similar) ───────────
+    _display = {
+        "ver_sim":       [False] * len(sku_array),
+        "🔄":            ["🔄" if sku in _sim_lookup else "" for sku in sku_array],
+        "QTD":           [int(qtd_map.get(sku, 0)) for sku in sku_array],
+        "LINHA":         filtered["LINHA"].values,
+        "COD SKU":       filtered["COD_SKU"].values,
+        "COD CITEL":     filtered["COD_CITEL"].values,
+        "LINHA / GRUPO": filtered["GRUPO"].values,
+        "MARCA":         filtered["MARCA"].values,
+        "EMBALAGEM":     filtered["EMBALAGEM"].values,
+        "DESCRIÇÃO":     filtered["DESC_FINAL"].values,
+    }
+    if ver_preco:
+        _display["PREÇO COMPRA"]   = filtered["PRECO"].values
+        _display["DESCONTO %"]     = pct
+        _display["PREÇO C/ DESC."] = np.round(filtered["PRECO"].values * factor, 2)
+
+    _df_edit = pd.DataFrame(_display)
+    _df_edit["ver_sim"] = _df_edit["ver_sim"].astype(bool)
+
+    _col_cfg = {
+        "ver_sim":       st.column_config.CheckboxColumn("☑", width=35,
+                             help="Marque para ver o similar disponível"),
+        "🔄":            st.column_config.TextColumn("🔄", width=40,  disabled=True,
+                             help="Produto possui similar cadastrado"),
+        "QTD":           st.column_config.NumberColumn("Qtd", width=70, min_value=0, step=1),
+        "LINHA":         st.column_config.NumberColumn(width=60,  disabled=True),
+        "COD SKU":       st.column_config.TextColumn(width=110,   disabled=True),
+        "COD CITEL":     st.column_config.TextColumn("COD CITEL", width=110, disabled=True),
+        "LINHA / GRUPO": st.column_config.TextColumn("Linha/Grupo", width=180, disabled=True),
+        "MARCA":         st.column_config.TextColumn(width=130,   disabled=True),
+        "EMBALAGEM":     st.column_config.TextColumn(width=160,   disabled=True),
+        "DESCRIÇÃO":     st.column_config.TextColumn(disabled=True),
+    }
+    if ver_preco:
+        _col_cfg["PREÇO COMPRA"]   = st.column_config.NumberColumn("Preço Compra",   format="R$ %.2f", width=140, disabled=True)
+        _col_cfg["DESCONTO %"]     = st.column_config.NumberColumn(format="%.2f%%",  width=90,         disabled=True)
+        _col_cfg["PREÇO C/ DESC."] = st.column_config.NumberColumn("Preço c/ Desc.", format="R$ %.2f", width=150, disabled=True)
+
+    if not db_ok:
+        citel_via_sb = st.session_state.get("sidebar_citel_via_sb", False)
+        if not citel_via_sb:
+            st.warning("⚠️ BD offline — COD CITEL, Grupo e Marca indisponíveis.")
+
+    _editor_key = f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[flt_cnt_key]}"
+
+    def _auto_save_qtd():
+        """Auto-salva QTDs commitadas (Enter/blur) para qtd_map.
+        Com @st.fragment, este on_change dispara apenas rerun do fragmento —
+        o cursor no editor é preservado (React reconcilia sem remontar)."""
+        _state = st.session_state.get(_editor_key, {})
+        _prev  = st.session_state.get(f"_prev_sku_{uf}", [])
+        for _ri_str, _rd in _state.get("edited_rows", {}).items():
+            if "QTD" not in _rd:
+                continue
+            try:
+                _ri = int(_ri_str)
+                if _ri >= len(_prev):
+                    continue
+                _v = max(0, int(float(str(_rd["QTD"])))) if _rd["QTD"] is not None else 0
+                _s = str(_prev[_ri])
+                if _v > 0:
+                    st.session_state[qtd_key][_s] = _v
+                else:
+                    st.session_state[qtd_key].pop(_s, None)
+            except (ValueError, TypeError):
+                pass
+
+    edited = st.data_editor(
+        _df_edit,
+        key=_editor_key,
+        column_config=_col_cfg,
+        hide_index=True,
+        use_container_width=True,
+        on_change=_auto_save_qtd,
+    )
+
+    st.session_state[f"_prev_sku_{uf}"] = list(map(str, sku_array))
+
+    # ── Diálogo de similar ────────────────────────────────────────────────────
+    _marcadas = edited[edited["ver_sim"] == True]
+    if not _marcadas.empty:
+        _idx_marcado = _marcadas.index[0]
+        if _idx_marcado < len(sku_array):
+            _sku_marcado = str(sku_array[_idx_marcado])
+            if _sku_marcado in _sim_lookup:
+                _sku_sim = _sim_lookup[_sku_marcado]["sku"]
+                if st.session_state.get(sim_sup_key) != _sku_marcado:
+                    st.session_state[sim_sup_key] = _sku_marcado
+                    _dlg_similar(
+                        _sku_marcado, _sku_sim,
+                        filtered[filtered["COD_SKU"] == _sku_marcado],
+                        rich[rich["COD_SKU"] == _sku_sim],
+                        ver_preco, dlg_key,
+                    )
+            else:
+                st.info(f"O produto `{_sku_marcado}` não possui similar cadastrado.")
+    else:
+        st.session_state.pop(sim_sup_key, None)
+
+    # ── Botões Aplicar / Zerar ────────────────────────────────────────────────
+    _col_ap, _col_zer = st.columns(2)
+    with _col_ap:
+        if st.button("✅ Aplicar Quantidades", type="primary",
+                     use_container_width=True, key=f"btn_ap_{uf}"):
+            for i in range(len(sku_array)):
+                try:
+                    _v = edited.iloc[i]["QTD"]
+                    _v = max(0, int(float(str(_v)))) if _v is not None else 0
+                except (ValueError, TypeError):
+                    _v = 0
+                _s = str(sku_array[i])
+                if _v > 0:
+                    st.session_state[qtd_key][_s] = _v
+                else:
+                    st.session_state[qtd_key].pop(_s, None)
+            st.session_state[aplc_key] += 1
+            st.rerun(scope="app")
+    with _col_zer:
+        if st.button("🗑️ Zerar Quantidades", use_container_width=True,
+                     key=f"btn_zer_{uf}"):
+            st.session_state[qtd_key]   = {}
+            st.session_state[zerar_key] += 1
+            st.rerun(scope="app")
+
+    # ── Rodapé: contagem ──────────────────────────────────────────────────────
+    _sel_skus_frag = {sku: q for sku, q in st.session_state[qtd_key].items() if q > 0}
+    n_total   = len(rich)
+    n_display = len(_df_edit)
+    filtrado  = f" (filtrado de {n_total})" if n_display < n_total else ""
+    st.caption(
+        f"**{n_display}** itens{filtrado} — UF: **{uf}**"
+        + (f" | **{len(_sel_skus_frag)}** selecionado(s)" if _sel_skus_frag else "")
+    )
+
+
 @st.dialog("🔄 Similar disponível", width="large")
 def _dlg_similar(sku_a: str, sku_b: str, ra, rb, ver_preco: bool, dlg_cnt_key: str):  # noqa: ARG001
     """Modal de comparação de similar — aparece sobre a tabela (inclusive em tela cheia)."""
@@ -64,11 +235,11 @@ def _dlg_similar(sku_a: str, sku_b: str, ra, rb, ver_preco: bool, dlg_cnt_key: s
             # Não altera dlg_cnt_key: evita trocar a chave do editor (o que sairia do fullscreen)
             # sim_sup_key já impede o diálogo de reabrir
             st.session_state["cat_busca_pending"] = sku_b
-            st.rerun()
+            st.rerun(scope="app")  # precisa rerun completo para processar cat_busca_pending
     with _b2:
         if st.button("✖ Fechar", use_container_width=True):
             # Apenas fecha — sim_sup_key impede reabertura; editor permanece em fullscreen
-            st.rerun()
+            st.rerun(scope="app")
 
 
 def render(
@@ -224,156 +395,28 @@ def render(
             st.session_state[_flt_cnt_key] += 1
         st.session_state[_flt_sig_key] = _flt_sig_cur
 
-    qtd_map   = st.session_state[qtd_key]   # quantidades APLICADAS (para preview)
-    sku_array = filtered["COD_SKU"].values
+    # Dados expostos ao fragmento via session_state (evita serialização de DataFrames)
+    st.session_state[f"_frag_filtered_{uf}"] = filtered
+    st.session_state[f"_frag_rich_{uf}"]     = rich
+    st.session_state[f"_sim_lookup_{uf}"]    = _sim_lookup
 
-    _tem_similar_na_lista = any(sku in _sim_lookup for sku in sku_array)
-    if _tem_similar_na_lista:
-        st.caption("💡 Linhas com 🔄 possuem similar — marque ☑ para ver o similar (abre janela, funciona em tela cheia).")
-
-    # ── Tabela principal (QTD editável + checkbox para ver similar) ───────────
-    _display = {
-        "ver_sim":       [False] * len(sku_array),
-        "🔄":            ["🔄" if sku in _sim_lookup else "" for sku in sku_array],
-        "QTD":           [int(qtd_map.get(sku, 0)) for sku in sku_array],
-        "LINHA":         filtered["LINHA"].values,
-        "COD SKU":       filtered["COD_SKU"].values,
-        "COD CITEL":     filtered["COD_CITEL"].values,
-        "LINHA / GRUPO": filtered["GRUPO"].values,
-        "MARCA":         filtered["MARCA"].values,
-        "EMBALAGEM":     filtered["EMBALAGEM"].values,
-        "DESCRIÇÃO":     filtered["DESC_FINAL"].values,
-    }
-    if ver_preco:
-        _display["PREÇO COMPRA"]   = filtered["PRECO"].values
-        _display["DESCONTO %"]     = pct
-        _display["PREÇO C/ DESC."] = np.round(filtered["PRECO"].values * factor, 2)
-
-    _df_edit = pd.DataFrame(_display)
-    _df_edit["ver_sim"] = _df_edit["ver_sim"].astype(bool)
-
-    _col_cfg = {
-        "ver_sim":       st.column_config.CheckboxColumn("☑", width=35,
-                             help="Marque para ver o similar disponível"),
-        "🔄":            st.column_config.TextColumn("🔄", width=40,  disabled=True,
-                             help="Produto possui similar cadastrado"),
-        "QTD":           st.column_config.NumberColumn("Qtd", width=70, min_value=0, step=1),
-        "LINHA":         st.column_config.NumberColumn(width=60,  disabled=True),
-        "COD SKU":       st.column_config.TextColumn(width=110,   disabled=True),
-        "COD CITEL":     st.column_config.TextColumn("COD CITEL", width=110, disabled=True),
-        "LINHA / GRUPO": st.column_config.TextColumn("Linha/Grupo", width=180, disabled=True),
-        "MARCA":         st.column_config.TextColumn(width=130,   disabled=True),
-        "EMBALAGEM":     st.column_config.TextColumn(width=160,   disabled=True),
-        "DESCRIÇÃO":     st.column_config.TextColumn(disabled=True),
-    }
-    if ver_preco:
-        _col_cfg["PREÇO COMPRA"]   = st.column_config.NumberColumn("Preço Compra",   format="R$ %.2f", width=140, disabled=True)
-        _col_cfg["DESCONTO %"]     = st.column_config.NumberColumn(format="%.2f%%",  width=90,         disabled=True)
-        _col_cfg["PREÇO C/ DESC."] = st.column_config.NumberColumn("Preço c/ Desc.", format="R$ %.2f", width=150, disabled=True)
-
-    if not db_ok:
-        citel_via_sb = st.session_state.get("sidebar_citel_via_sb", False)
-        if not citel_via_sb:
-            st.warning("⚠️ BD offline — COD CITEL, Grupo e Marca indisponíveis.")
-
-    # Chave inclui filtro: reseta editor ao mudar filtro (preserva QTDs via qtd_map)
-    _editor_key = f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[_flt_cnt_key]}"
-
-    def _auto_save_qtd():
-        """Auto-salva QTDs commitadas (Enter/blur) para qtd_map imediatamente.
-        Garante que 'Aplicar' leia o valor mesmo quando o usuário não pressionou
-        Enter antes de clicar no botão (evita necessidade de 2 cliques em similares)."""
-        _state = st.session_state.get(_editor_key, {})
-        _prev  = st.session_state.get(f"_prev_sku_{uf}", [])
-        for _ri_str, _rd in _state.get("edited_rows", {}).items():
-            if "QTD" not in _rd:
-                continue
-            try:
-                _ri = int(_ri_str)
-                if _ri >= len(_prev):
-                    continue
-                _v = max(0, int(float(str(_rd["QTD"])))) if _rd["QTD"] is not None else 0
-                _s = str(_prev[_ri])
-                if _v > 0:
-                    st.session_state[qtd_key][_s] = _v
-                else:
-                    st.session_state[qtd_key].pop(_s, None)
-            except (ValueError, TypeError):
-                pass
-
-    edited = st.data_editor(
-        _df_edit,
-        key=_editor_key,
-        column_config=_col_cfg,
-        hide_index=True,
-        use_container_width=True,
-        on_change=_auto_save_qtd,
+    _render_editor(
+        uf=uf,
+        qtd_key=qtd_key,
+        zerar_key=zerar_key,
+        aplc_key=aplc_key,
+        dlg_key=dlg_key,
+        sim_sup_key=sim_sup_key,
+        flt_cnt_key=_flt_cnt_key,
+        ver_preco=ver_preco,
+        pct=pct,
+        factor=factor,
+        db_ok=db_ok,
     )
-
-    # Salva sku_array atual para uso na próxima mudança de filtro
-    st.session_state[f"_prev_sku_{uf}"] = list(map(str, sku_array))
-
-    # ── Diálogo de similar (abre sobre a tabela, funciona em tela cheia) ───────
-    _marcadas = edited[edited["ver_sim"] == True]
-    if not _marcadas.empty:
-        _idx_marcado = _marcadas.index[0]
-        if _idx_marcado < len(sku_array):
-            _sku_marcado = str(sku_array[_idx_marcado])
-            if _sku_marcado in _sim_lookup:
-                _sku_sim = _sim_lookup[_sku_marcado]["sku"]
-                # Supressão: evita reabrir o diálogo quando o usuário fecha com X
-                if st.session_state.get(sim_sup_key) != _sku_marcado:
-                    st.session_state[sim_sup_key] = _sku_marcado
-                    _dlg_similar(
-                        _sku_marcado, _sku_sim,
-                        filtered[filtered["COD_SKU"] == _sku_marcado],
-                        rich[rich["COD_SKU"] == _sku_sim],
-                        ver_preco, dlg_key,
-                    )
-            else:
-                st.info(f"O produto `{_sku_marcado}` não possui similar cadastrado.")
-    else:
-        # Checkbox desmarcado → limpa supressão para permitir reabrir
-        st.session_state.pop(sim_sup_key, None)
-
-    # ── Botões Aplicar / Zerar ────────────────────────────────────────────────
-    _col_ap, _col_zer = st.columns(2)
-    with _col_ap:
-        if st.button("✅ Aplicar Quantidades", type="primary",
-                     use_container_width=True, key=f"btn_ap_{uf}"):
-            # Mescla visíveis no qtd_map (já atualizado pelo auto-save)
-            for i in range(len(sku_array)):
-                try:
-                    _v = edited.iloc[i]["QTD"]
-                    _v = max(0, int(float(str(_v)))) if _v is not None else 0
-                except (ValueError, TypeError):
-                    _v = 0
-                _s = str(sku_array[i])
-                if _v > 0:
-                    st.session_state[qtd_key][_s] = _v
-                else:
-                    st.session_state[qtd_key].pop(_s, None)
-            st.session_state[aplc_key] += 1   # força editor a refletir valores salvos
-            st.rerun()
-    with _col_zer:
-        if st.button("🗑️ Zerar Quantidades", use_container_width=True,
-                     key=f"btn_zer_{uf}"):
-            st.session_state[qtd_key]   = {}
-            st.session_state[zerar_key] += 1
-            st.rerun()
-
-    # ── Rodapé: contagem ──────────────────────────────────────────────────────
-    _sel_skus = {sku: q for sku, q in qtd_map.items() if q > 0}
-    n_total   = len(rich)
-    n_display = len(_df_edit)
-    filtrado  = f" (filtrado de {n_total})" if n_display < n_total else ""
-    st.caption(
-        f"**{n_display}** itens{filtrado} — UF: **{uf}**"
-        + (f" | **{len(_sel_skus)}** selecionado(s)" if _sel_skus else "")
-    )
-
 
     # ── Preview do Pedido ─────────────────────────────────────────────────────
+    qtd_map  = st.session_state[qtd_key]   # re-lê após possível atualização do fragmento
+    _sel_skus = {sku: q for sku, q in qtd_map.items() if q > 0}
     if not _sel_skus:
         return
 
