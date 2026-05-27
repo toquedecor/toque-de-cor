@@ -33,7 +33,6 @@ from db_supabase import (
 STATES = ["RN", "BA", "PE", "AL", "PB"]
 
 
-@st.fragment
 def _render_editor(
     uf: str,
     qtd_key: str,
@@ -114,35 +113,12 @@ def _render_editor(
 
     _editor_key = f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[flt_cnt_key]}"
 
-    def _auto_save_qtd():
-        """Auto-salva QTDs commitadas (Enter/blur) para qtd_map.
-        Com @st.fragment, este on_change dispara apenas rerun do fragmento —
-        o cursor no editor é preservado (React reconcilia sem remontar)."""
-        _state = st.session_state.get(_editor_key, {})
-        _prev  = st.session_state.get(f"_prev_sku_{uf}", [])
-        for _ri_str, _rd in _state.get("edited_rows", {}).items():
-            if "QTD" not in _rd:
-                continue
-            try:
-                _ri = int(_ri_str)
-                if _ri >= len(_prev):
-                    continue
-                _v = max(0, int(float(str(_rd["QTD"])))) if _rd["QTD"] is not None else 0
-                _s = str(_prev[_ri])
-                if _v > 0:
-                    st.session_state[qtd_key][_s] = _v
-                else:
-                    st.session_state[qtd_key].pop(_s, None)
-            except (ValueError, TypeError):
-                pass
-
     edited = st.data_editor(
         _df_edit,
         key=_editor_key,
         column_config=_col_cfg,
         hide_index=True,
         use_container_width=True,
-        on_change=_auto_save_qtd,
     )
 
     st.session_state[f"_prev_sku_{uf}"] = list(map(str, sku_array))
