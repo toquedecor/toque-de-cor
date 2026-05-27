@@ -238,7 +238,7 @@ def _add_novos_catalogo(sb, citel_lookup: dict, citel_skus: set) -> int:
             to_insert.append({
                 "uf":           uf_upper,
                 "cod_sku":      sku,
-                "linha":        0,
+                "linha":        999999,
                 "descricao":    desc_db,
                 "descricao_db": desc_db,
                 "desc_final":   desc_db,
@@ -348,8 +348,9 @@ def _reenrich_catalogo(sb, citel_lookup: dict, citel_skus: set | None = None) ->
                 old_embalagem_db  = str(row.get("embalagem_db") or "").strip() if has_extra else ""
 
                 # Supremacia da planilha: só atualiza preco se o item NÃO está na planilha
-                # (linha=999999 → adicionado pelo sync CITEL; linha real → veio do Excel)
-                is_citel_item = int(row.get("linha") or 0) == 999999
+                # (linha=999999 ou linha=0 → adicionado pelo sync CITEL; linha real → veio do Excel)
+                _linha = int(row.get("linha") or 0)
+                is_citel_item = _linha == 999999 or _linha == 0
                 old_preco     = float(row.get("preco") or 0)
                 new_preco     = new_preco_compra if is_citel_item else old_preco
 
