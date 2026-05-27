@@ -171,10 +171,20 @@ def exportar_excel_sw(
     return buf.read()
 
 
-def exportar_excel_outros(itens: list[dict], pedido: dict | None = None) -> bytes:
+def exportar_excel_outros(
+    itens: list[dict],
+    pedido: dict | None = None,
+    mostrar_precos: bool = False,
+) -> bytes:
     """Gera .xlsx para itens de outras marcas (não Suvinil nem Sherwin-Williams)."""
-    rows = [
-        {
+    cols = ["Cod Citel", "SKU", "Marca", "Descrição", "Embalagem", "Quantidade"]
+    if mostrar_precos:
+        cols += ["Preço Unit. (R$)", "Total (R$)"]
+    rows = []
+    for it in itens:
+        if _classifica_marca(it.get("marca", "")) != "outros":
+            continue
+        row = {
             "Cod Citel":  it.get("cod_citel", ""),
             "SKU":        it.get("cod_sku", ""),
             "Marca":      it.get("marca", ""),
@@ -182,12 +192,11 @@ def exportar_excel_outros(itens: list[dict], pedido: dict | None = None) -> byte
             "Embalagem":  it.get("embalagem", ""),
             "Quantidade": int(it.get("qtd", 0)),
         }
-        for it in itens
-        if _classifica_marca(it.get("marca", "")) == "outros"
-    ]
-    df = pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["Cod Citel", "SKU", "Marca", "Descrição", "Embalagem", "Quantidade"]
-    )
+        if mostrar_precos:
+            row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
+            row["Total (R$)"]       = float(it.get("total", 0))
+        rows.append(row)
+    df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     wb = Workbook()
     ws = wb.active
     ws.title = "Outras Marcas"
@@ -459,7 +468,7 @@ def enviar_email_pedido(
         ))
     if _itens_outros:
         anexos.append((
-            exportar_excel_outros(itens, pedido=pedido),
+            exportar_excel_outros(itens, pedido=pedido, mostrar_precos=mostrar_precos),
             f"Pedido_Outros_{loja}_{data}.xlsx",
         ))
         anexos.append((
