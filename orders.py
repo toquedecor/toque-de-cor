@@ -237,14 +237,15 @@ def exportar_excel_completo(
 
 # ── E-mail ───────────────────────────────────────────────────────────────────
 def _config_smtp() -> dict:
-    """Lê configurações SMTP do Supabase ou variáveis de ambiente."""
+    """Lê configurações SMTP/SendGrid do Supabase ou variáveis de ambiente."""
     cfg = {
-        "host":      os.environ.get("SMTP_HOST", "smtp.gmail.com"),
-        "port":      int(os.environ.get("SMTP_PORT", "587")),
-        "usuario":   os.environ.get("SMTP_USUARIO", ""),
-        "senha":     os.environ.get("SMTP_SENHA", ""),
-        "remetente": os.environ.get("SMTP_REMETENTE", ""),
-        "destinatarios": os.environ.get("SMTP_DESTINATARIOS", ""),
+        "host":             os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+        "port":             int(os.environ.get("SMTP_PORT", "587")),
+        "usuario":          os.environ.get("SMTP_USUARIO", ""),
+        "senha":            os.environ.get("SMTP_SENHA", ""),
+        "remetente":        os.environ.get("SMTP_REMETENTE", ""),
+        "destinatarios":    os.environ.get("SMTP_DESTINATARIOS", ""),
+        "sendgrid_api_key": os.environ.get("SENDGRID_API_KEY", ""),
     }
     # Sobrescreve com valores do banco se disponíveis
     try:
@@ -253,9 +254,61 @@ def _config_smtp() -> dict:
             val = get_config(f"smtp_{k}")
             if val:
                 cfg[k] = int(val) if k == "port" else val
+        # SendGrid API key (salva como 'smtp_sendgrid_api_key' no banco)
+        sg = get_config("smtp_sendgrid_api_key")
+        if sg:
+            cfg["sendgrid_api_key"] = sg
     except Exception:
         pass
     return cfg
+
+
+def _enviar_via_sendgrid(
+    api_key: str,
+    from_email: str,
+    destinos: list[str],
+    subject: str,
+    html: str,
+    anexos: list[tuple[bytes, str]],
+) -> None:
+    """
+    Envia e-mail via SendGrid HTTP API (porta 443 — funciona no HuggingFace).
+    Lança Exception em caso de falha.
+    """
+    import base64
+    import json
+    import urllib.request
+
+    payload: dict = {
+        "personalizations": [{"to": [{"email": d} for d in destinos]}],
+        "from":    {"email": from_email},
+        "subject": subject,
+        "content": [{"type": "text/html", "value": html}],
+    }
+    if anexos:
+        payload["attachments"] = [
+            {
+                "content":     base64.b64encode(data).decode(),
+                "filename":    filename,
+                "type":        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "disposition": "attachment",
+            }
+            for data, filename in anexos
+        ]
+
+    req = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        status = resp.status
+    if status not in (200, 202):
+        raise Exception(f"SendGrid retornou HTTP {status}")
 
 
 def _html_pedido(pedido: dict, itens: list[dict], mostrar_precos: bool) -> str:
@@ -332,11 +385,19 @@ def enviar_email_pedido(
 ) -> tuple[bool, str]:
     """
     Envia o pedido por e-mail com anexos Excel separados por marca.
+    Usa SendGrid HTTP API se a chave estiver configurada (funciona no HuggingFace).
+    Fallback para SMTP clássico caso contrário.
     Retorna (sucesso, mensagem).
     """
-    cfg = _config_smtp()
-    if not cfg["usuario"] or not cfg["senha"]:
-        return False, "SMTP não configurado. Acesse Painel Admin → Configurações."
+    cfg    = _config_smtp()
+    sg_key = cfg.get("sendgrid_api_key", "")
+
+    # Precisa de SendGrid OU credenciais SMTP
+    if not sg_key and (not cfg["usuario"] or not cfg["senha"]):
+        return False, (
+            "E-mail não configurado. "
+            "Acesse Painel Admin → Configurações e informe a SendGrid API Key."
+        )
 
     destinos_str = cfg.get("destinatarios", "")
     destinos = [d.strip() for d in destinos_str.split(",") if d.strip()]
@@ -345,50 +406,55 @@ def enviar_email_pedido(
     if not destinos:
         return False, "Nenhum destinatário configurado."
 
-    num  = pedido.get("numero", 0)
-    loja = pedido.get("loja", "")
-    data = datetime.now().strftime("%d-%m-%Y")
+    num        = pedido.get("numero", 0)
+    loja       = pedido.get("loja", "")
+    data       = datetime.now().strftime("%d-%m-%Y")
+    subject    = f"Pedido #{num:04d} — {loja} — {data}"
+    from_email = cfg.get("remetente") or cfg["usuario"]
+    html_body  = _html_pedido(pedido, itens, mostrar_precos)
 
+    # Monta anexos Excel separados por marca
+    anexos: list[tuple[bytes, str]] = []
+    if any(_classifica_marca(it.get("marca", "")) == "suvinil" for it in itens):
+        anexos.append((
+            exportar_excel_suvinil(itens, pedido=pedido),
+            f"Pedido_Suvinil_{loja}_{data}.xlsx",
+        ))
+    if any(_classifica_marca(it.get("marca", "")) == "sw" for it in itens):
+        anexos.append((
+            exportar_excel_sw(itens, pedido=pedido),
+            f"Pedido_SW_{loja}_{data}.xlsx",
+        ))
+    if any(_classifica_marca(it.get("marca", "")) == "outros" for it in itens):
+        anexos.append((
+            exportar_excel_outros(itens, pedido=pedido),
+            f"Pedido_Outros_{loja}_{data}.xlsx",
+        ))
+
+    # ── SendGrid (prioridade — funciona no HuggingFace) ──────────────────────
+    if sg_key:
+        try:
+            _enviar_via_sendgrid(sg_key, from_email, destinos, subject, html_body, anexos)
+            return True, f"E-mail enviado para: {', '.join(destinos)}"
+        except Exception as e:
+            return False, f"Erro SendGrid: {e}"
+
+    # ── SMTP fallback (ambientes sem bloqueio de porta) ───────────────────────
     msg = MIMEMultipart("mixed")
-    msg["Subject"] = f"Pedido #{num:04d} — {loja} — {data}"
-    msg["From"]    = cfg.get("remetente") or cfg["usuario"]
+    msg["Subject"] = subject
+    msg["From"]    = from_email
     msg["To"]      = ", ".join(destinos)
-
-    msg.attach(MIMEText(_html_pedido(pedido, itens, mostrar_precos), "html", "utf-8"))
-
-    # Anexo Suvinil/Glasurit
-    itens_suvinil = [it for it in itens if _classifica_marca(it.get("marca","")) == "suvinil"]
-    if itens_suvinil:
-        xls = exportar_excel_suvinil(itens, pedido=pedido)
-        att = MIMEApplication(xls, _subtype="xlsx")
-        att.add_header("Content-Disposition", "attachment",
-                       filename=f"Pedido_Suvinil_{loja}_{data}.xlsx")
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    for xls_bytes, filename in anexos:
+        att = MIMEApplication(xls_bytes, _subtype="xlsx")
+        att.add_header("Content-Disposition", "attachment", filename=filename)
         msg.attach(att)
-
-    # Anexo Sherwin-Williams
-    itens_sw = [it for it in itens if _classifica_marca(it.get("marca","")) == "sw"]
-    if itens_sw:
-        xls = exportar_excel_sw(itens, pedido=pedido)
-        att = MIMEApplication(xls, _subtype="xlsx")
-        att.add_header("Content-Disposition", "attachment",
-                       filename=f"Pedido_SW_{loja}_{data}.xlsx")
-        msg.attach(att)
-
-    # Anexo Outras Marcas (Atlas, marca em branco, etc.)
-    itens_outros = [it for it in itens if _classifica_marca(it.get("marca","")) == "outros"]
-    if itens_outros:
-        xls = exportar_excel_outros(itens, pedido=pedido)
-        att = MIMEApplication(xls, _subtype="xlsx")
-        att.add_header("Content-Disposition", "attachment",
-                       filename=f"Pedido_Outros_{loja}_{data}.xlsx")
-        msg.attach(att)
-
     try:
         ctx = ssl.create_default_context()
         with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as s:
             s.starttls(context=ctx)
             s.login(cfg["usuario"], cfg["senha"])
-            s.sendmail(msg["From"], destinos, msg.as_bytes())
+            s.sendmail(from_email, destinos, msg.as_bytes())
         return True, f"E-mail enviado para: {', '.join(destinos)}"
     except smtplib.SMTPAuthenticationError:
         return False, "Falha de autenticação SMTP. Verifique usuário/senha."
