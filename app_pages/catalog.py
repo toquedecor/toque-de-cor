@@ -27,6 +27,7 @@ from db_supabase import (
     atualizar_status_pedido,
     get_config,
     registrar_auditoria,
+    get_similares,
 )
 
 STATES = ["RN", "BA", "PE", "AL", "PB"]
@@ -106,9 +107,7 @@ def render(
         src = ""
 
     # ── Carrega similares cadastrados ────────────────────────────────────────
-    import json as _json
-    _sim_file = Path(__file__).parent.parent / "similares.json"
-    _sim_pairs = _json.loads(_sim_file.read_text("utf-8")) if _sim_file.exists() else []
+    _sim_pairs = get_similares()
     # Lookup bidirecional: sku -> {sku, label, desc}
     _sim_lookup: dict = {}
     for _p in _sim_pairs:

@@ -157,6 +157,36 @@ def set_config(chave: str, valor: str) -> bool:
         return False
 
 
+# ── Similares ────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=30)
+def get_similares() -> list[dict]:
+    """Retorna lista de pares de similares armazenada no Supabase. Cache 30s."""
+    import json
+    val = get_config("similares_json", "")
+    if val:
+        try:
+            return json.loads(val)
+        except Exception:
+            pass
+    # Fallback: lê do arquivo local (migração / primeira execução)
+    _f = Path(__file__).parent / "similares.json"
+    if _f.exists():
+        try:
+            return json.loads(_f.read_text("utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def set_similares(pares: list[dict]) -> bool:
+    """Persiste lista de pares de similares no Supabase e invalida o cache."""
+    import json
+    ok = set_config("similares_json", json.dumps(pares, ensure_ascii=False))
+    if ok:
+        get_similares.clear()
+    return ok
+
+
 def get_permissoes_perfil(perfil: str) -> set:
     """Retorna o conjunto de permissões de um perfil salvo no Supabase.
     Retorna set vazio se não houver configuração (auth.py usa fallback padrão)."""

@@ -44,7 +44,7 @@ from db import (                          # db.py original — MySQL/CITEL
     query_items, test_connection,
     clear_disk_cache, get_cached_data,
 )
-from db_supabase import supabase_ok, get_config, catalogo_disponivel, get_catalogo_uf
+from db_supabase import supabase_ok, get_config, catalogo_disponivel, get_catalogo_uf, get_similares, set_similares
 from app_pages import admin, catalog, history
 
 # ── Constantes ────────────────────────────────────────────────────────────────
@@ -452,11 +452,8 @@ elif pagina == "🔄 Similares":
         from pathlib import Path as _P
         import json
 
-        SIMILARES_FILE = DATA_DIR / "similares.json"
         if "similares" not in st.session_state:
-            st.session_state.similares = (
-                json.loads(SIMILARES_FILE.read_text("utf-8")) if SIMILARES_FILE.exists() else []
-            )
+            st.session_state.similares = get_similares()
 
         st.markdown("## 🔄 Similares / Comparativo")
         opcoes    = get_product_opcoes(src)
@@ -487,9 +484,7 @@ elif pagina == "🔄 Similares":
                     existing = [(p["sku_a"], p["sku_b"]) for p in st.session_state.similares]
                     if (sku_a, sku_b) not in existing and (sku_b, sku_a) not in existing:
                         st.session_state.similares.append(pair)
-                        SIMILARES_FILE.write_text(
-                            json.dumps(st.session_state.similares, ensure_ascii=False, indent=2), "utf-8"
-                        )
+                        set_similares(st.session_state.similares)
                         st.rerun()
                     else:
                         st.warning("Par já cadastrado.")
@@ -524,9 +519,7 @@ elif pagina == "🔄 Similares":
                 )
                 if st.button("🗑️ Remover", key=f"del_sim_{idx}"):
                     st.session_state.similares.pop(idx)
-                    SIMILARES_FILE.write_text(
-                        json.dumps(st.session_state.similares, ensure_ascii=False, indent=2), "utf-8"
-                    )
+                    set_similares(st.session_state.similares)
                     st.rerun()
 
 elif pagina == "⚙️ Admin":
