@@ -52,7 +52,7 @@ def _ler_uf(path: str, uf: str) -> pd.DataFrame:
     df["COR"]       = df["COR"].fillna("").astype(str).str.strip()
     df["EMBALAGEM"] = df["EMBALAGEM"].fillna("").astype(str).str.strip()
     df["PRECO"]     = pd.to_numeric(df["PRECO"], errors="coerce").fillna(0.0)
-    df = df[df["EMBALAGEM"] != ""].reset_index(drop=True)
+    df = df[df["COD_SKU"].str.match(r'^\d+$')].reset_index(drop=True)
     df["LINHA"] = range(1, len(df) + 1)
     return df
 
@@ -87,6 +87,12 @@ def _enriquecer(df: pd.DataFrame, db: pd.DataFrame, uf: str = "") -> pd.DataFram
 
     result["DESCRICAO_DB"] = np.where(
         result["DESCRICAO_DB"] != "", result["DESCRICAO_DB"], result["DESCRICAO"]
+    )
+    # Fallback: usa EMBALAGEM_DB do CITEL quando a planilha não preencheu a embalagem
+    result["EMBALAGEM"] = np.where(
+        (result["EMBALAGEM"] == "") & (result["EMBALAGEM_DB"].fillna("") != ""),
+        result["EMBALAGEM_DB"],
+        result["EMBALAGEM"],
     )
     result["DESC_FINAL"] = np.where(
         result["COR"] != "",
