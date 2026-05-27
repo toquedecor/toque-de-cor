@@ -158,9 +158,9 @@ def set_config(chave: str, valor: str) -> bool:
 
 
 # ── Similares ────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=300)
 def get_similares() -> list[dict]:
-    """Retorna lista de pares de similares armazenada no Supabase. Cache 30s."""
+    """Retorna lista de pares de similares armazenada no Supabase. Cache 5min."""
     import json
     val = get_config("similares_json", "")
     if val:
@@ -251,14 +251,17 @@ def salvar_pedido(pedido: dict, itens: list[dict]) -> tuple[bool, str, int]:
         ]
         sb.table("pedido_itens").insert(linhas).execute()
         registrar_auditoria(pedido.get("usuario", ""), "PEDIDO_CRIADO", f"Pedido #{numero}")
+        listar_pedidos.clear()
         return True, f"Pedido #{numero:04d} salvo.", pedido_id
     except Exception as e:
         return False, str(e), -1
 
 
+@st.cache_data(ttl=30)
 def listar_pedidos(usuario: str = "", loja: str = "", perfil: str = "") -> list[dict]:
     """
     Lista pedidos. Admin/Supervisor veem todos; Vendedor vê apenas os próprios.
+    Cache 30s — evita HTTP a cada navegação entre menus.
     """
     sb = get_supabase()
     if not sb:
@@ -306,6 +309,7 @@ def atualizar_status_pedido(pedido_id: int, status: str, usuario: str = "") -> b
             upd["enviado_em"] = datetime.utcnow().isoformat()
         sb.table("pedidos").update(upd).eq("id", pedido_id).execute()
         registrar_auditoria(usuario, f"STATUS_{status.upper()}", f"Pedido id={pedido_id}")
+        listar_pedidos.clear()
         return True
     except Exception:
         return False
@@ -318,6 +322,7 @@ def excluir_pedido(pedido_id: int, usuario: str = "") -> bool:
     try:
         sb.table("pedidos").delete().eq("id", pedido_id).execute()
         registrar_auditoria(usuario, "PEDIDO_EXCLUIDO", f"Pedido id={pedido_id}")
+        listar_pedidos.clear()
         return True
     except Exception:
         return False
@@ -361,6 +366,7 @@ def atualizar_pedido(
         if linhas:
             sb.table("pedido_itens").insert(linhas).execute()
         registrar_auditoria(usuario, "PEDIDO_EDITADO", f"Pedido id={pedido_id}")
+        listar_pedidos.clear()
         return True, "Pedido atualizado com sucesso."
     except Exception as e:
         return False, str(e)

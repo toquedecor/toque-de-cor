@@ -75,7 +75,8 @@ def render():
 
     ver_preco   = auth.tem_permissao("ver_precos")
     pode_aprov  = auth.tem_permissao("aprovar_pedidos")
-    exige_aprov = get_config("pedido_aprovacao", "false") == "true"
+    from db_supabase import get_all_configs as _all_cfg
+    exige_aprov = _all_cfg().get("pedido_aprovacao", "false") == "true"
 
     st.markdown("## 📦 Histórico de Pedidos")
 
