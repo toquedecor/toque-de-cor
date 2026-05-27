@@ -109,7 +109,8 @@ def exportar_excel_suvinil(
     """
     cols = ["Cod Citel", "SKU", "Descrição", "Embalagem", "Quantidade"]
     if mostrar_precos:
-        cols += ["Preço Unit. (R$)", "Total (R$)"]
+        cols += ["Desconto (%)", "Preço Unit. (R$)", "Total (R$)"]
+    _desc_pct = float((pedido or {}).get("desconto_pct", 0))
     rows = []
     for it in itens:
         if _classifica_marca(it.get("marca", "")) != "suvinil":
@@ -122,6 +123,7 @@ def exportar_excel_suvinil(
             "Quantidade": int(it.get("qtd", 0)),
         }
         if mostrar_precos:
+            row["Desconto (%)"]      = _desc_pct
             row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
             row["Total (R$)"]       = float(it.get("total", 0))
         rows.append(row)
@@ -144,7 +146,8 @@ def exportar_excel_sw(
     """Gera .xlsx para itens Sherwin-Williams."""
     cols = ["Cod Citel", "SKU", "Descrição", "Embalagem", "Quantidade"]
     if mostrar_precos:
-        cols += ["Preço Unit. (R$)", "Total (R$)"]
+        cols += ["Desconto (%)", "Preço Unit. (R$)", "Total (R$)"]
+    _desc_pct = float((pedido or {}).get("desconto_pct", 0))
     rows = []
     for it in itens:
         if _classifica_marca(it.get("marca", "")) != "sw":
@@ -157,6 +160,7 @@ def exportar_excel_sw(
             "Quantidade": int(it.get("qtd", 0)),
         }
         if mostrar_precos:
+            row["Desconto (%)"]      = _desc_pct
             row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
             row["Total (R$)"]       = float(it.get("total", 0))
         rows.append(row)
@@ -179,7 +183,8 @@ def exportar_excel_outros(
     """Gera .xlsx para itens de outras marcas (não Suvinil nem Sherwin-Williams)."""
     cols = ["Cod Citel", "SKU", "Marca", "Descrição", "Embalagem", "Quantidade"]
     if mostrar_precos:
-        cols += ["Preço Unit. (R$)", "Total (R$)"]
+        cols += ["Desconto (%)", "Preço Unit. (R$)", "Total (R$)"]
+    _desc_pct = float((pedido or {}).get("desconto_pct", 0))
     rows = []
     for it in itens:
         if _classifica_marca(it.get("marca", "")) != "outros":
@@ -193,6 +198,7 @@ def exportar_excel_outros(
             "Quantidade": int(it.get("qtd", 0)),
         }
         if mostrar_precos:
+            row["Desconto (%)"]      = _desc_pct
             row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
             row["Total (R$)"]       = float(it.get("total", 0))
         rows.append(row)
