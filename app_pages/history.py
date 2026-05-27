@@ -27,6 +27,7 @@ from db_supabase import (
 from orders import (
     exportar_excel_suvinil,
     exportar_excel_sw,
+    exportar_excel_outros,
     exportar_excel_completo,
     exportar_excel_citel,
     enviar_email_pedido,
@@ -300,8 +301,9 @@ def render():
                     st.rerun()
 
         # Downloads Excel — 2 botões, cada um dispara múltiplos arquivos separados por marca
-        _itens_suv = [it for it in itens if _classifica_marca(it.get("marca", "")) == "suvinil"]
-        _itens_sw  = [it for it in itens if _classifica_marca(it.get("marca", "")) == "sw"]
+        _itens_suv    = [it for it in itens if _classifica_marca(it.get("marca", "")) == "suvinil"]
+        _itens_sw     = [it for it in itens if _classifica_marca(it.get("marca", "")) == "sw"]
+        _itens_outros = [it for it in itens if _classifica_marca(it.get("marca", "")) == "outros"]
         _data_str  = datetime.now(_BR_TZ).strftime("%d-%m-%Y")
         _loja_str  = ped.get("loja", "")
         _uf_str    = ped.get("uf", "")
@@ -319,9 +321,14 @@ def render():
                     exportar_excel_sw(itens, pedido=ped),
                     f"Pedido_SW_{_uf_str}_{_loja_str}_{_data_str}.xlsx",
                 ))
+            if _itens_outros:
+                _arqs_excel.append((
+                    exportar_excel_outros(itens, pedido=ped),
+                    f"Pedido_Outros_{_uf_str}_{_loja_str}_{_data_str}.xlsx",
+                ))
             if _arqs_excel:
                 _btn_multi_download(
-                    f"📥 Excel Completo ({len(_itens_suv + _itens_sw)})",
+                    f"📥 Excel Completo ({len(itens)})",
                     _arqs_excel,
                     key=f"excel_{pid}",
                 )
@@ -341,9 +348,14 @@ def render():
                     exportar_excel_citel(_itens_sw),
                     f"Importacao_Citel_SW_{_uf_str}_{_loja_str}_{_data_str}.xlsx",
                 ))
+            if _itens_outros:
+                _arqs_citel.append((
+                    exportar_excel_citel(_itens_outros),
+                    f"Importacao_Citel_Outros_{_uf_str}_{_loja_str}_{_data_str}.xlsx",
+                ))
             if _arqs_citel:
                 _btn_multi_download(
-                    f"📥 Excel CITEL ({len(_itens_suv + _itens_sw)})",
+                    f"📥 Excel CITEL ({len(itens)})",
                     _arqs_citel,
                     key=f"citel_{pid}",
                 )
