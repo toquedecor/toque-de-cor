@@ -151,6 +151,33 @@ def exportar_excel_sw(itens: list[dict], pedido: dict | None = None) -> bytes:
     return buf.read()
 
 
+def exportar_excel_outros(itens: list[dict], pedido: dict | None = None) -> bytes:
+    """Gera .xlsx para itens de outras marcas (não Suvinil nem Sherwin-Williams)."""
+    rows = [
+        {
+            "Cod Citel":  it.get("cod_citel", ""),
+            "SKU":        it.get("cod_sku", ""),
+            "Marca":      it.get("marca", ""),
+            "Descrição":  it.get("descricao", ""),
+            "Embalagem":  it.get("embalagem", ""),
+            "Quantidade": int(it.get("qtd", 0)),
+        }
+        for it in itens
+        if _classifica_marca(it.get("marca", "")) == "outros"
+    ]
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["Cod Citel", "SKU", "Marca", "Descrição", "Embalagem", "Quantidade"]
+    )
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Outras Marcas"
+    _escrever_planilha(ws, df, pedido)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def exportar_excel_citel(itens: list[dict]) -> bytes:
     """
     Gera .xlsx no formato CITEL (sem cabeçalho, 8 colunas):
@@ -345,6 +372,15 @@ def enviar_email_pedido(
         att = MIMEApplication(xls, _subtype="xlsx")
         att.add_header("Content-Disposition", "attachment",
                        filename=f"Pedido_SW_{loja}_{data}.xlsx")
+        msg.attach(att)
+
+    # Anexo Outras Marcas (Atlas, marca em branco, etc.)
+    itens_outros = [it for it in itens if _classifica_marca(it.get("marca","")) == "outros"]
+    if itens_outros:
+        xls = exportar_excel_outros(itens, pedido=pedido)
+        att = MIMEApplication(xls, _subtype="xlsx")
+        att.add_header("Content-Disposition", "attachment",
+                       filename=f"Pedido_Outros_{loja}_{data}.xlsx")
         msg.attach(att)
 
     try:
