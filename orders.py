@@ -97,25 +97,35 @@ def _escrever_planilha(ws, df: pd.DataFrame, pedido: dict | None = None) -> None
         ws.column_dimensions[col_letter].width = min(max_len + 4, 65)
 
 
-def exportar_excel_suvinil(itens: list[dict], pedido: dict | None = None) -> bytes:
+def exportar_excel_suvinil(
+    itens: list[dict],
+    pedido: dict | None = None,
+    mostrar_precos: bool = False,
+) -> bytes:
     """
     Gera .xlsx padrão Suvinil com colunas:
-    Cod Citel | SKU | Descrição | Quantidade
+    Cod Citel | SKU | Descrição | Embalagem | Quantidade [| Preço Unit. | Total]
     Inclui apenas itens de marca Suvinil/Glasurit.
     """
-    rows = [
-        {
+    cols = ["Cod Citel", "SKU", "Descrição", "Embalagem", "Quantidade"]
+    if mostrar_precos:
+        cols += ["Preço Unit. (R$)", "Total (R$)"]
+    rows = []
+    for it in itens:
+        if _classifica_marca(it.get("marca", "")) != "suvinil":
+            continue
+        row = {
             "Cod Citel":  it.get("cod_citel", ""),
             "SKU":        it.get("cod_sku", ""),
             "Descrição":  it.get("descricao", ""),
+            "Embalagem":  it.get("embalagem", ""),
             "Quantidade": int(it.get("qtd", 0)),
         }
-        for it in itens
-        if _classifica_marca(it.get("marca", "")) == "suvinil"
-    ]
-    df = pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["Cod Citel", "SKU", "Descrição", "Quantidade"]
-    )
+        if mostrar_precos:
+            row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
+            row["Total (R$)"]       = float(it.get("total", 0))
+        rows.append(row)
+    df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     wb = Workbook()
     ws = wb.active
     ws.title = "Pedido Suvinil"
@@ -126,21 +136,31 @@ def exportar_excel_suvinil(itens: list[dict], pedido: dict | None = None) -> byt
     return buf.read()
 
 
-def exportar_excel_sw(itens: list[dict], pedido: dict | None = None) -> bytes:
+def exportar_excel_sw(
+    itens: list[dict],
+    pedido: dict | None = None,
+    mostrar_precos: bool = False,
+) -> bytes:
     """Gera .xlsx para itens Sherwin-Williams."""
-    rows = [
-        {
+    cols = ["Cod Citel", "SKU", "Descrição", "Embalagem", "Quantidade"]
+    if mostrar_precos:
+        cols += ["Preço Unit. (R$)", "Total (R$)"]
+    rows = []
+    for it in itens:
+        if _classifica_marca(it.get("marca", "")) != "sw":
+            continue
+        row = {
             "Cod Citel":  it.get("cod_citel", ""),
             "SKU":        it.get("cod_sku", ""),
             "Descrição":  it.get("descricao", ""),
+            "Embalagem":  it.get("embalagem", ""),
             "Quantidade": int(it.get("qtd", 0)),
         }
-        for it in itens
-        if _classifica_marca(it.get("marca", "")) == "sw"
-    ]
-    df = pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["Cod Citel", "SKU", "Descrição", "Quantidade"]
-    )
+        if mostrar_precos:
+            row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
+            row["Total (R$)"]       = float(it.get("total", 0))
+        rows.append(row)
+    df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     wb = Workbook()
     ws = wb.active
     ws.title = "Pedido SW"
@@ -413,22 +433,38 @@ def enviar_email_pedido(
     from_email = cfg.get("remetente") or cfg["usuario"]
     html_body  = _html_pedido(pedido, itens, mostrar_precos)
 
-    # Monta anexos Excel separados por marca
+    # Monta anexos Excel separados por marca + planilhas CITEL
+    _itens_suv    = [it for it in itens if _classifica_marca(it.get("marca", "")) == "suvinil"]
+    _itens_sw     = [it for it in itens if _classifica_marca(it.get("marca", "")) == "sw"]
+    _itens_outros = [it for it in itens if _classifica_marca(it.get("marca", "")) == "outros"]
+
     anexos: list[tuple[bytes, str]] = []
-    if any(_classifica_marca(it.get("marca", "")) == "suvinil" for it in itens):
+    if _itens_suv:
         anexos.append((
-            exportar_excel_suvinil(itens, pedido=pedido),
+            exportar_excel_suvinil(itens, pedido=pedido, mostrar_precos=mostrar_precos),
             f"Pedido_Suvinil_{loja}_{data}.xlsx",
         ))
-    if any(_classifica_marca(it.get("marca", "")) == "sw" for it in itens):
         anexos.append((
-            exportar_excel_sw(itens, pedido=pedido),
+            exportar_excel_citel(_itens_suv),
+            f"Importacao_Citel_Suvinil_{loja}_{data}.xlsx",
+        ))
+    if _itens_sw:
+        anexos.append((
+            exportar_excel_sw(itens, pedido=pedido, mostrar_precos=mostrar_precos),
             f"Pedido_SW_{loja}_{data}.xlsx",
         ))
-    if any(_classifica_marca(it.get("marca", "")) == "outros" for it in itens):
+        anexos.append((
+            exportar_excel_citel(_itens_sw),
+            f"Importacao_Citel_SW_{loja}_{data}.xlsx",
+        ))
+    if _itens_outros:
         anexos.append((
             exportar_excel_outros(itens, pedido=pedido),
             f"Pedido_Outros_{loja}_{data}.xlsx",
+        ))
+        anexos.append((
+            exportar_excel_citel(_itens_outros),
+            f"Importacao_Citel_Outros_{loja}_{data}.xlsx",
         ))
 
     # ── SendGrid (prioridade — funciona no HuggingFace) ──────────────────────
