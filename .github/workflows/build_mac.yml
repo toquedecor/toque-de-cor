@@ -1,9 +1,7 @@
 name: Gerar App Mac
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:   # permite rodar manualmente pelo site do GitHub
+  workflow_dispatch:   # apenas manual pelo site do GitHub
 
 jobs:
   build:
