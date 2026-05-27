@@ -347,8 +347,9 @@ def _reenrich_catalogo(sb, citel_lookup: dict, citel_skus: set | None = None) ->
                 old_preco_compra  = float(row.get("preco_compra") or 0) if has_extra else 0.0
                 old_embalagem_db  = str(row.get("embalagem_db") or "").strip() if has_extra else ""
 
-                # Para itens adicionados via CITEL (não Excel), atualiza preco junto
-                is_citel_item = str(row.get("cod_sku") or "").strip() in _citel_skus
+                # Supremacia da planilha: só atualiza preco se o item NÃO está na planilha
+                # (linha=999999 → adicionado pelo sync CITEL; linha real → veio do Excel)
+                is_citel_item = int(row.get("linha") or 0) == 999999
                 old_preco     = float(row.get("preco") or 0)
                 new_preco     = new_preco_compra if is_citel_item else old_preco
 
