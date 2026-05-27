@@ -9,6 +9,7 @@ Abas:
   4. Auditoria  — log de ações do sistema
 """
 
+import json
 import pandas as pd
 import streamlit as st
 from pathlib import Path
@@ -108,6 +109,7 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                                 ok_c, msg_c = set_codigo_usuario(_login_gerado, novo_codigo)
                                 if not ok_c:
                                     st.warning(f"Usuário criado, mas código não salvo: {msg_c}")
+                        auth.listar_usuarios.clear()
                         st.success(msg)
                         st.rerun()
                     else:
@@ -172,6 +174,7 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                     if ed_excluir:
                         ok, msg = auth.excluir_usuario(sel_login)
                         if ok:
+                            auth.listar_usuarios.clear()
                             st.success(msg)
                             st.rerun()
                         else:
@@ -205,6 +208,7 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
                             if not ok3:
                                 st.error(msg3)
                                 st.stop()
+                        auth.listar_usuarios.clear()
                         st.success(f"✅ Usuário '{sel_login}' atualizado.")
                         st.rerun()
 
@@ -221,12 +225,11 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
         _todos_perms = auth.TODAS_PERMISSOES  # {chave: rótulo}
         _perfis_edit = list(auth.PERFIS.keys())
 
-        # Carrega permissões atuais de cada perfil (1 HTTP por perfil, mas só ao abrir a aba)
+        # Extrai permissões direto do _cfg já carregado (sem chamadas HTTP extras)
         _perms_atuais = {
             p: (
-                get_permissoes_perfil(p)
-                or auth._PERMISSOES_PADRAO.get(p, set())
-            )
+                set(json.loads(_cfg[f"permissoes_{p}"])) if _cfg.get(f"permissoes_{p}") else set()
+            ) or auth._PERMISSOES_PADRAO.get(p, set())
             for p in _perfis_edit
         }
 
@@ -377,8 +380,8 @@ def render(excel_source_key: str = "excel_source", clear_caches_fn=None):
         st.markdown("### Importar Nova Tabela de Preços")
 
         # ── Status da tabela atual ──────────────────────────────────────────
-        ultima = get_config("ultima_importacao", "")
-        nome   = get_config("excel_nome", "")
+        ultima = _cfg.get("ultima_importacao", "")
+        nome   = _cfg.get("excel_nome", "")
         if ultima:
             st.success(f"📄 **Tabela ativa:** `{nome or '—'}`  \n🕒 **Importada em:** {ultima}")
         else:

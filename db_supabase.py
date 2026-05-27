@@ -121,8 +121,9 @@ def supabase_ok() -> bool:
 
 
 # ── Configurações do sistema ─────────────────────────────────────────────────
+@st.cache_data(ttl=60)
 def get_all_configs() -> dict:
-    """Busca todas as configurações do sistema em uma única requisição."""
+    """Busca todas as configurações do sistema em uma única requisição. Cache 60s."""
     sb = get_supabase()
     if not sb:
         return {}
@@ -150,6 +151,7 @@ def set_config(chave: str, valor: str) -> bool:
         return False
     try:
         sb.table("configuracoes").upsert({"chave": chave, "valor": valor}).execute()
+        get_all_configs.clear()  # invalida cache após qualquer gravação
         return True
     except Exception:
         return False
@@ -356,6 +358,7 @@ def registrar_auditoria(usuario: str, acao: str, detalhe: str = "") -> None:
         pass
 
 
+@st.cache_data(ttl=60)
 def listar_auditoria(limit: int = 100) -> list[dict]:
     sb = get_supabase()
     if not sb:

@@ -104,8 +104,9 @@ def _get_sb():
         return None
 
 
+@st.cache_data(ttl=30)
 def listar_usuarios() -> list[dict]:
-    """Retorna todos os usuários (sem hash de senha)."""
+    """Retorna todos os usuários (sem hash de senha). Cache 30s."""
     sb = _get_sb()
     if not sb:
         return _usuarios_fallback()
