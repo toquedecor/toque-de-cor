@@ -168,14 +168,6 @@ def get_similares() -> list[dict]:
             return json.loads(val)
         except Exception:
             pass
-    # Fallback: lê do arquivo local (migração / primeira execução)
-    from pathlib import Path
-    _f = Path(__file__).parent / "similares.json"
-    if _f.exists():
-        try:
-            return json.loads(_f.read_text("utf-8"))
-        except Exception:
-            pass
     return []
 
 
