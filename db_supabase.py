@@ -248,27 +248,37 @@ def set_permissoes_perfil(perfil: str, permissoes: set) -> bool:
 
 # ── Pedidos ──────────────────────────────────────────────────────────────────
 def proximo_numero_pedido() -> int:
-    """Retorna o próximo número sequencial de pedido."""
+    """Retorna o próximo número sequencial de pedido.
+
+    Nunca reutiliza números de pedidos excluídos: o maior número
+    já utilizado é persistido em configuracoes(ultimo_numero_pedido),
+    garantindo que exclusões não recuem o contador.
+    """
     sb = get_supabase()
     if not sb:
         return 1
     try:
+        # Maior número já persistido (sobrevive a exclusões)
+        try:
+            ultimo_salvo = int(get_config("ultimo_numero_pedido", "0"))
+        except (ValueError, TypeError):
+            ultimo_salvo = 0
+        # Maior número atual na tabela
         r = sb.table("pedidos").select("numero").order("numero", desc=True).limit(1).execute()
-        if r.data:
-            return r.data[0]["numero"] + 1
-        return 1
+        ultimo_tabela = r.data[0]["numero"] if r.data else 0
+        return max(ultimo_salvo, ultimo_tabela) + 1
     except Exception:
         return 1
 
 
-def salvar_pedido(pedido: dict, itens: list[dict]) -> tuple[bool, str, int]:
+def salvar_pedido(pedido: dict, itens: list[dict]) -> tuple[bool, str, int, int]:
     """
     Persiste um pedido e seus itens no Supabase.
-    Retorna (sucesso, mensagem, id_pedido).
+    Retorna (sucesso, mensagem, id_pedido, numero_sequencial).
     """
     sb = get_supabase()
     if not sb:
-        return False, "Banco de dados indisponível.", -1
+        return False, "Banco de dados indisponível.", -1, 0
     try:
         numero = proximo_numero_pedido()
         r = sb.table("pedidos").insert({
@@ -299,9 +309,11 @@ def salvar_pedido(pedido: dict, itens: list[dict]) -> tuple[bool, str, int]:
         sb.table("pedido_itens").insert(linhas).execute()
         registrar_auditoria(pedido.get("usuario", ""), "PEDIDO_CRIADO", f"Pedido #{numero}")
         listar_pedidos.clear()
-        return True, f"Pedido #{numero:04d} salvo.", pedido_id
+        # Persiste o contador para que exclusões não recuem o sequencial
+        set_config("ultimo_numero_pedido", str(numero))
+        return True, f"Pedido #{numero:04d} salvo.", pedido_id, numero
     except Exception as e:
-        return False, str(e), -1
+        return False, str(e), -1, 0
 
 
 @st.cache_data(ttl=30)

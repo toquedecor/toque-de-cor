@@ -512,13 +512,13 @@ def render(
                 "desconto_pct": pct,
                 "total_geral":  total_geral,
             }
-            ok, msg, pid = salvar_pedido(pedido_data, itens_pedido)
+            ok, msg, pid, num_pedido = salvar_pedido(pedido_data, itens_pedido)
             if ok:
                 if exige_aprov:
                     st.success(f"✅ {msg} — aguardando aprovação do supervisor.")
                 else:
                     # Envia e-mail imediatamente
-                    pedido_data["numero"] = pid
+                    pedido_data["numero"] = num_pedido
                     ok_mail, msg_mail = enviar_email_pedido(
                         pedido_data, itens_pedido, mostrar_precos=True
                     )
