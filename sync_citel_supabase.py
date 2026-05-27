@@ -181,7 +181,85 @@ _BASE_CAT_COLS  = ("id,uf,cod_sku,linha,descricao,embalagem,cor,preco,"
 _EXTRA_CAT_COLS = "embalagem_db,preco_compra"
 
 
-def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
+def _get_citel_skus(sb) -> set:
+    """Retorna conjunto de SKUs adicionados ao catálogo pelo sync CITEL (não do Excel)."""
+    import json
+    val = _get_config(sb, "citel_added_skus")
+    if val:
+        try:
+            return set(json.loads(val))
+        except Exception:
+            pass
+    return set()
+
+
+def _save_citel_skus(sb, skus: set) -> None:
+    """Persiste conjunto de SKUs de origem CITEL no Supabase."""
+    import json
+    _set_config(sb, "citel_added_skus", json.dumps(sorted(skus)))
+
+
+def _add_novos_catalogo(sb, citel_lookup: dict, citel_skus: set) -> int:
+    """
+    Insere no catálogo produtos que existem no CITEL mas ainda não estão lá.
+    Cria 1 linha por UF para cada produto novo, com preco = preco_compra.
+    Atualiza citel_skus in-place com os novos SKUs adicionados.
+    Retorna o número de SKUs novos inseridos.
+    """
+    PAGE = 1000
+    existing_skus: set = set()
+    offset = 0
+    while True:
+        r = (sb.table("catalogo")
+             .select("cod_sku")
+             .range(offset, offset + PAGE - 1)
+             .execute())
+        for row in (r.data or []):
+            existing_skus.add(str(row["cod_sku"]).strip())
+        if len(r.data or []) < PAGE:
+            break
+        offset += PAGE
+
+    novos = [s for s in citel_lookup.keys() if s and s not in existing_skus]
+    if not novos:
+        return 0
+
+    to_insert = []
+    for sku in novos:
+        citel    = citel_lookup[sku]
+        desc_db  = str(citel.get("descricao_db") or "").strip()
+        emb_db   = str(citel.get("embalagem_db") or "").strip()
+        cod_cit  = str(citel.get("cod_citel") or "").strip()
+        marca    = str(citel.get("marca") or "").strip()
+        grupo    = str(citel.get("grupo") or "").strip()
+        for uf_upper in ("RN", "BA", "PE", "AL", "PB"):
+            preco_key    = _UF_PRECO_KEY.get(uf_upper.lower())
+            preco_compra = float(citel.get(preco_key) or 0) if preco_key else 0.0
+            to_insert.append({
+                "uf":           uf_upper,
+                "cod_sku":      sku,
+                "linha":        0,
+                "descricao":    desc_db,
+                "descricao_db": desc_db,
+                "desc_final":   desc_db,
+                "cor":          "",
+                "preco":        preco_compra,
+                "preco_compra": preco_compra,
+                "cod_citel":    cod_cit,
+                "marca":        marca,
+                "grupo":        grupo,
+                "embalagem":    emb_db,
+                "embalagem_db": emb_db,
+            })
+
+    for i in range(0, len(to_insert), BATCH):
+        sb.table("catalogo").insert(to_insert[i:i + BATCH]).execute()
+
+    citel_skus.update(novos)
+    return len(novos)
+
+
+def _reenrich_catalogo(sb, citel_lookup: dict, citel_skus: set | None = None) -> int:
     """
     Atualiza as colunas CITEL no catálogo: cod_citel, marca, grupo, descricao_db,
     desc_final, embalagem_db, embalagem (se vazia) e preco_compra (por UF).
@@ -195,8 +273,11 @@ def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
             preco_compra_al, preco_compra_pb
         }
     }
+    citel_skus: conjunto de SKUs adicionados pelo sync (não do Excel).
+               Para esses itens, preco é atualizado junto com preco_compra.
     Retorna o número de linhas do catálogo efetivamente atualizadas.
     """
+    _citel_skus = citel_skus or set()
     if not citel_lookup:
         return 0
 
@@ -266,6 +347,11 @@ def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
                 old_preco_compra  = float(row.get("preco_compra") or 0) if has_extra else 0.0
                 old_embalagem_db  = str(row.get("embalagem_db") or "").strip() if has_extra else ""
 
+                # Para itens adicionados via CITEL (não Excel), atualiza preco junto
+                is_citel_item = str(row.get("cod_sku") or "").strip() in _citel_skus
+                old_preco     = float(row.get("preco") or 0)
+                new_preco     = new_preco_compra if is_citel_item else old_preco
+
                 changed = (
                     str(row.get("cod_citel") or "").strip()    != new_cod_citel    or
                     str(row.get("marca") or "").strip()        != new_marca        or
@@ -274,7 +360,8 @@ def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
                     str(row.get("desc_final") or "").strip()   != new_desc_final   or
                     old_embalagem_db                           != new_embalagem_db or
                     old_embalagem                              != new_embalagem    or
-                    abs(old_preco_compra - new_preco_compra)   > 0.0001
+                    abs(old_preco_compra - new_preco_compra)   > 0.0001           or
+                    (is_citel_item and abs(old_preco - new_preco_compra) > 0.0001)
                 )
                 if changed:
                     to_update.append({
@@ -285,7 +372,7 @@ def _reenrich_catalogo(sb, citel_lookup: dict) -> int:
                         "linha":         row.get("linha") or 0,
                         "descricao":     row.get("descricao") or "",
                         "cor":           row.get("cor") or "",
-                        "preco":         float(row.get("preco") or 0),
+                        "preco":         new_preco,
                         # Colunas atualizadas pelo CITEL
                         "cod_citel":     new_cod_citel,
                         "marca":         new_marca,
@@ -339,11 +426,16 @@ _CONFIG_TBL  = "configuracoes"
 
 def _fingerprint_citel() -> str:
     """
-    Fingerprint do CADITE que detecta:
+    Fingerprint do CADITE + ITEGER que detecta:
     - Novos produtos (COUNT)
     - Produtos removidos (COUNT)
     - Alteracoes em descricao, marca ou grupo (checksum via SUM+LENGTH)
+    - Alteracoes em precos de custo (SUM ITEGER.ITE_PRECUS)
     """
+    todas_empresas = sorted(set(
+        e for emps in _UF_EMPRESAS.values() for e in emps
+    ))
+    codes_str = ",".join(f"'{e}'" for e in todas_empresas)
     conn = _citel_conn()
     try:
         with conn.cursor() as cur:
@@ -361,7 +453,15 @@ def _fingerprint_citel() -> str:
                 FROM CADITE c
             """)
             r = cur.fetchone()
-        return f"{r['cnt']}|{r['max_fab']}|{r['sum_desc']}|{r['sum_mar']}|{r['sum_gru']}"
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT CAST(ROUND(SUM(COALESCE(ITE_PRECUS, 0)), 0) AS UNSIGNED) AS sum_preco
+                FROM ITEGER
+                WHERE ITE_CODEMP IN ({codes_str})
+            """)
+            r2 = cur.fetchone()
+        sum_preco = int(r2['sum_preco'] or 0) if r2 else 0
+        return f"{r['cnt']}|{r['max_fab']}|{r['sum_desc']}|{r['sum_mar']}|{r['sum_gru']}|{sum_preco}"
     finally:
         conn.close()
 
@@ -470,7 +570,19 @@ def main(force: bool = False) -> tuple[bool, str]:
         }
         for r in rows
     }
-    n_cat = _reenrich_catalogo(sb, citel_lookup)
+
+    # 7a. Carrega conjunto de SKUs de origem CITEL (adicionados pelo sync)
+    citel_skus = _get_citel_skus(sb)
+
+    # 7b. Adiciona novos produtos do CITEL que ainda não estão no catálogo
+    print("  Verificando novos produtos no CITEL para adicionar ao catálogo...")
+    n_novos = _add_novos_catalogo(sb, citel_lookup, citel_skus)
+    if n_novos:
+        print(f"  {n_novos} novos produtos adicionados ao catálogo.")
+        _save_citel_skus(sb, citel_skus)
+
+    # 7c. Reenriquece existentes (atualiza preco para itens de origem CITEL)
+    n_cat = _reenrich_catalogo(sb, citel_lookup, citel_skus)
     if n_cat:
         print(f"  {n_cat} linhas do catálogo atualizadas com dados CITEL.")
 
@@ -480,7 +592,9 @@ def main(force: bool = False) -> tuple[bool, str]:
     _set_config(sb, _TS_KEY, datetime.now(timezone.utc).isoformat())
 
     n_dedup = len({str(r["cod_fab"]).strip() for r in rows})
-    resumo = f"{n_dedup} produtos sincronizados, {removidos} removidos" + (f", {n_cat} linhas do catálogo atualizadas" if n_cat else "")
+    resumo = (f"{n_dedup} produtos sincronizados, {removidos} removidos"
+              + (f", {n_novos} novos no catálogo" if n_novos else "")
+              + (f", {n_cat} linhas do catálogo atualizadas" if n_cat else ""))
     print(f"  Sync concluido: {resumo}.")
     print(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] Pronto!")
     return True, resumo
