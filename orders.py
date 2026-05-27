@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 # Marcas que vão para o arquivo Suvinil/Glasurit
 MARCAS_SUVINIL = {"SUVINIL", "GLASURIT", "GLASU", "GLASURITE"}
@@ -97,36 +98,188 @@ def _escrever_planilha(ws, df: pd.DataFrame, pedido: dict | None = None) -> None
         ws.column_dimensions[col_letter].width = min(max_len + 4, 65)
 
 
+def _exportar_excel_interativo(
+    itens: list[dict],
+    pedido: dict | None,
+    marca_filtro: str,
+    ws_title: str,
+) -> bytes:
+    """
+    Gera Excel interativo com célula de Desconto Global editável (amarela) e
+    fórmulas que recalculam Preço c/ Desc. e Total automaticamente.
+
+    Estrutura:
+      Linhas 1-5 : Loja, Operador, UF, Data, Hora
+      Linha 6    : Desconto Global (%) | [célula amarela editável = desconto_pct do pedido]
+      Linha 8    : Cabeçalho da tabela
+      Linhas 9+  : Dados com fórmulas
+      Última+2   : Total Geral
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = ws_title
+
+    _RED  = "C0392B"
+    _YELL = "FFFF00"
+    _GRAY = "F0F0F0"
+
+    bold         = Font(bold=True)
+    hdr_font     = Font(bold=True, color="FFFFFF")
+    hdr_fill     = PatternFill(start_color=_RED,  end_color=_RED,  fill_type="solid")
+    hdr_align    = Alignment(horizontal="center", vertical="center")
+    red_fill     = PatternFill(start_color=_RED,  end_color=_RED,  fill_type="solid")
+    yellow_fill  = PatternFill(start_color=_YELL, end_color=_YELL, fill_type="solid")
+    gray_fill    = PatternFill(start_color=_GRAY, end_color=_GRAY, fill_type="solid")
+    money_fmt    = '"R$ "#,##0.00'
+    pct_fmt      = "0.00"
+
+    desconto_pct = float((pedido or {}).get("desconto_pct", 0))
+    raw_dt = (pedido or {}).get("criado_em", "")
+    try:
+        dt = datetime.fromisoformat(str(raw_dt).replace("Z", "+00:00"))
+        data_fmt = dt.strftime("%d/%m/%Y")
+        hora_fmt = dt.strftime("%H:%M")
+    except Exception:
+        data_fmt = datetime.now().strftime("%d/%m/%Y")
+        hora_fmt = datetime.now().strftime("%H:%M")
+
+    # ── Linhas 1-5: metadados ────────────────────────────────────────────────
+    meta = [
+        ("Loja:",     (pedido or {}).get("loja", "")),
+        ("Operador:", (pedido or {}).get("usuario", "")),
+        ("UF:",       (pedido or {}).get("uf", "")),
+        ("Data:",     data_fmt),
+        ("Hora:",     hora_fmt),
+    ]
+    for i, (label, value) in enumerate(meta, start=1):
+        ws.cell(row=i, column=1, value=label).font = bold
+        ws.cell(row=i, column=2, value=value)
+
+    # ── Linha 6: Desconto Global (célula amarela editável) ───────────────────
+    lbl6 = ws.cell(row=6, column=1, value="Desconto Global (%):") 
+    lbl6.font = Font(bold=True, color="FFFFFF")
+    lbl6.fill = red_fill
+    inp6 = ws.cell(row=6, column=2, value=desconto_pct)
+    inp6.fill = yellow_fill
+    inp6.number_format = pct_fmt
+
+    # ── Linha 8: cabeçalho da tabela ────────────────────────────────────────
+    incluir_marca = (marca_filtro == "outros")
+    if incluir_marca:
+        headers = [
+            "Cod Citel", "SKU", "Marca", "Descrição", "Quantidade",
+            "Preço Unit. (R$)", "Desconto (%)", "Preço c/ Desc. (R$)", "Total c/ Desc. (R$)",
+        ]
+        C_CITEL=1; C_SKU=2; C_MARCA=3; C_DESC=4; C_QTD=5
+        C_PRECO=6; C_DPCT=7; C_PDISC=8; C_TOTAL=9
+    else:
+        headers = [
+            "Cod Citel", "SKU", "Descrição", "Quantidade",
+            "Preço Unit. (R$)", "Desconto (%)", "Preço c/ Desc. (R$)", "Total c/ Desc. (R$)",
+        ]
+        C_CITEL=1; C_SKU=2; C_DESC=3; C_QTD=4
+        C_PRECO=5; C_DPCT=6; C_PDISC=7; C_TOTAL=8
+
+    HDR = 8
+    for ci, h in enumerate(headers, start=1):
+        cell = ws.cell(row=HDR, column=ci, value=h)
+        cell.font      = hdr_font
+        cell.fill      = hdr_fill
+        cell.alignment = hdr_align
+    ws.row_dimensions[HDR].height = 18
+
+    # ── Dados com fórmulas ───────────────────────────────────────────────────
+    itens_marca = [it for it in itens if _classifica_marca(it.get("marca", "")) == marca_filtro]
+
+    # Reverter desconto já aplicado para obter o preço base
+    def _base_price(preco_unit: float) -> float:
+        if desconto_pct <= 0 or desconto_pct >= 100:
+            return preco_unit
+        return round(preco_unit / (1 - desconto_pct / 100), 4)
+
+    DS = 9  # data start row
+    for offset, it in enumerate(itens_marca):
+        r = DS + offset
+        ws.cell(row=r, column=C_CITEL, value=it.get("cod_citel", ""))
+        ws.cell(row=r, column=C_SKU,   value=it.get("cod_sku", ""))
+        if incluir_marca:
+            ws.cell(row=r, column=C_MARCA, value=it.get("marca", ""))
+        ws.cell(row=r, column=C_DESC, value=it.get("descricao", ""))
+        ws.cell(row=r, column=C_QTD,  value=int(it.get("qtd", 0)))
+
+        bp = _base_price(float(it.get("preco_unit", 0)))
+        pc = ws.cell(row=r, column=C_PRECO, value=bp)
+        pc.number_format = money_fmt
+
+        # Desconto (%) → referencia $B$6
+        dc = ws.cell(row=r, column=C_DPCT, value="=$B$6")
+        dc.number_format = pct_fmt
+
+        # Preço c/ Desc. = Preço Unit. × (1 - $B$6/100)
+        lp = get_column_letter(C_PRECO)
+        pd_cell = ws.cell(row=r, column=C_PDISC, value=f"={lp}{r}*(1-$B$6/100)")
+        pd_cell.number_format = money_fmt
+
+        # Total c/ Desc. = Qtd × Preço c/ Desc.
+        lq  = get_column_letter(C_QTD)
+        lpd = get_column_letter(C_PDISC)
+        tc  = ws.cell(row=r, column=C_TOTAL, value=f"={lq}{r}*{lpd}{r}")
+        tc.number_format = money_fmt
+
+    last = DS + len(itens_marca) - 1
+
+    # ── Total Geral ──────────────────────────────────────────────────────────
+    if itens_marca:
+        tr = last + 2
+        lbl_t = ws.cell(row=tr, column=C_PDISC, value="Total Geral:")
+        lbl_t.font      = Font(bold=True)
+        lbl_t.alignment = Alignment(horizontal="right")
+        lt = get_column_letter(C_TOTAL)
+        sum_t = ws.cell(row=tr, column=C_TOTAL, value=f"=SUM({lt}{DS}:{lt}{last})")
+        sum_t.font          = Font(bold=True)
+        sum_t.fill          = gray_fill
+        sum_t.number_format = money_fmt
+
+    # ── Auto-size de colunas ─────────────────────────────────────────────────
+    for col in ws.columns:
+        max_len = 0
+        for cell in col:
+            if cell.value is not None:
+                try:
+                    max_len = max(max_len, len(str(cell.value)))
+                except Exception:
+                    pass
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 65)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def exportar_excel_suvinil(
     itens: list[dict],
     pedido: dict | None = None,
     mostrar_precos: bool = False,
 ) -> bytes:
+    """Gera .xlsx Suvinil/Glasurit.
+    mostrar_precos=True  → formato interativo com célula de desconto e fórmulas.
+    mostrar_precos=False → formato simples (Cod Citel, SKU, Descrição, Embalagem, Qtd).
     """
-    Gera .xlsx padrão Suvinil com colunas:
-    Cod Citel | SKU | Descrição | Embalagem | Quantidade [| Preço Unit. | Total]
-    Inclui apenas itens de marca Suvinil/Glasurit.
-    """
-    cols = ["Cod Citel", "SKU", "Descrição", "Embalagem", "Quantidade"]
     if mostrar_precos:
-        cols += ["Desconto (%)", "Preço Unit. (R$)", "Total (R$)"]
-    _desc_pct = float((pedido or {}).get("desconto_pct", 0))
-    rows = []
-    for it in itens:
-        if _classifica_marca(it.get("marca", "")) != "suvinil":
-            continue
-        row = {
+        return _exportar_excel_interativo(itens, pedido, "suvinil", "Pedido Suvinil")
+    rows = [
+        {
             "Cod Citel":  it.get("cod_citel", ""),
             "SKU":        it.get("cod_sku", ""),
             "Descrição":  it.get("descricao", ""),
             "Embalagem":  it.get("embalagem", ""),
             "Quantidade": int(it.get("qtd", 0)),
         }
-        if mostrar_precos:
-            row["Desconto (%)"]      = _desc_pct
-            row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
-            row["Total (R$)"]       = float(it.get("total", 0))
-        rows.append(row)
+        for it in itens
+        if _classifica_marca(it.get("marca", "")) == "suvinil"
+    ]
+    cols = ["Cod Citel", "SKU", "Descrição", "Embalagem", "Quantidade"]
     df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     wb = Workbook()
     ws = wb.active
@@ -143,27 +296,24 @@ def exportar_excel_sw(
     pedido: dict | None = None,
     mostrar_precos: bool = False,
 ) -> bytes:
-    """Gera .xlsx para itens Sherwin-Williams."""
-    cols = ["Cod Citel", "SKU", "Descrição", "Embalagem", "Quantidade"]
+    """Gera .xlsx Sherwin-Williams.
+    mostrar_precos=True  → formato interativo com célula de desconto e fórmulas.
+    mostrar_precos=False → formato simples.
+    """
     if mostrar_precos:
-        cols += ["Desconto (%)", "Preço Unit. (R$)", "Total (R$)"]
-    _desc_pct = float((pedido or {}).get("desconto_pct", 0))
-    rows = []
-    for it in itens:
-        if _classifica_marca(it.get("marca", "")) != "sw":
-            continue
-        row = {
+        return _exportar_excel_interativo(itens, pedido, "sw", "Pedido SW")
+    rows = [
+        {
             "Cod Citel":  it.get("cod_citel", ""),
             "SKU":        it.get("cod_sku", ""),
             "Descrição":  it.get("descricao", ""),
             "Embalagem":  it.get("embalagem", ""),
             "Quantidade": int(it.get("qtd", 0)),
         }
-        if mostrar_precos:
-            row["Desconto (%)"]      = _desc_pct
-            row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
-            row["Total (R$)"]       = float(it.get("total", 0))
-        rows.append(row)
+        for it in itens
+        if _classifica_marca(it.get("marca", "")) == "sw"
+    ]
+    cols = ["Cod Citel", "SKU", "Descrição", "Embalagem", "Quantidade"]
     df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     wb = Workbook()
     ws = wb.active
@@ -180,16 +330,14 @@ def exportar_excel_outros(
     pedido: dict | None = None,
     mostrar_precos: bool = False,
 ) -> bytes:
-    """Gera .xlsx para itens de outras marcas (não Suvinil nem Sherwin-Williams)."""
-    cols = ["Cod Citel", "SKU", "Marca", "Descrição", "Embalagem", "Quantidade"]
+    """Gera .xlsx para itens de outras marcas.
+    mostrar_precos=True  → formato interativo com célula de desconto e fórmulas.
+    mostrar_precos=False → formato simples.
+    """
     if mostrar_precos:
-        cols += ["Desconto (%)", "Preço Unit. (R$)", "Total (R$)"]
-    _desc_pct = float((pedido or {}).get("desconto_pct", 0))
-    rows = []
-    for it in itens:
-        if _classifica_marca(it.get("marca", "")) != "outros":
-            continue
-        row = {
+        return _exportar_excel_interativo(itens, pedido, "outros", "Outras Marcas")
+    rows = [
+        {
             "Cod Citel":  it.get("cod_citel", ""),
             "SKU":        it.get("cod_sku", ""),
             "Marca":      it.get("marca", ""),
@@ -197,11 +345,10 @@ def exportar_excel_outros(
             "Embalagem":  it.get("embalagem", ""),
             "Quantidade": int(it.get("qtd", 0)),
         }
-        if mostrar_precos:
-            row["Desconto (%)"]      = _desc_pct
-            row["Preço Unit. (R$)"] = float(it.get("preco_unit", 0))
-            row["Total (R$)"]       = float(it.get("total", 0))
-        rows.append(row)
+        for it in itens
+        if _classifica_marca(it.get("marca", "")) == "outros"
+    ]
+    cols = ["Cod Citel", "SKU", "Marca", "Descrição", "Embalagem", "Quantidade"]
     df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     wb = Workbook()
     ws = wb.active
