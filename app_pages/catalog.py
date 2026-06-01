@@ -505,6 +505,9 @@ def render(
     # Botão Enviar Pedido
     with col_env:
         if st.button(label_btn, type="primary", use_container_width=True):
+            if not itens_pedido:
+                st.error("❌ Adicione ao menos um item antes de enviar.")
+                st.stop()
             pedido_data = {
                 "usuario":     u.get("nome", u.get("usuario", "")),
                 "loja":        u.get("loja", ""),
