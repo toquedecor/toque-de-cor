@@ -32,6 +32,10 @@ from db_supabase import (
 
 STATES = ["RN", "BA", "PE", "AL", "PB"]
 
+# Filtro global de marcas visíveis no catálogo.
+# Para exibir todas as marcas, deixe a lista vazia: []
+_MARCAS_VISIVEIS = ["SUVINIL", "SHERWIN WILLIAMS IMOBI/SHERWIN"]
+
 
 def _render_editor(
     uf: str,
@@ -301,7 +305,8 @@ def render(
     )
 
     unique_grupos = sorted(g for g in rich["GRUPO"].unique() if g)
-    unique_marcas = sorted(m for m in rich["MARCA"].unique() if m)
+    _all_marcas   = sorted(m for m in rich["MARCA"].unique() if m)
+    unique_marcas = [m for m in _all_marcas if not _MARCAS_VISIVEIS or m in _MARCAS_VISIVEIS]
     unique_embs   = sorted(e for e in rich["EMBALAGEM"].unique() if e)
 
     with st.expander("🔍 Filtros", expanded=False):
@@ -314,6 +319,8 @@ def render(
             sel_embs = st.multiselect("Embalagem", unique_embs, placeholder="Todas")
 
     mask = pd.Series(True, index=rich.index)
+    if _MARCAS_VISIVEIS:
+        mask &= rich["MARCA"].isin(_MARCAS_VISIVEIS)
     if sel_grupos:
         mask &= rich["GRUPO"].isin(sel_grupos)
     if sel_marcas:
