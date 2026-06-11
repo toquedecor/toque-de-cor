@@ -8,11 +8,19 @@ Permissões:
 """
 
 import io
+import hashlib
 import numpy as np
 import pandas as pd
 import streamlit as st
 from pathlib import Path
 from datetime import datetime
+
+
+def _cart_fp(itens: list) -> str:
+    """Fingerprint único do carrinho: hash dos pares (sku, qtd) ordenados."""
+    return hashlib.md5(
+        str(sorted((it["cod_sku"], it["qtd"]) for it in itens)).encode()
+    ).hexdigest()
 
 import auth
 from orders import (
@@ -37,6 +45,7 @@ STATES = ["RN", "BA", "PE", "AL", "PB"]
 _MARCAS_VISIVEIS = ["SUVINIL", "SHERWIN WILLIAMS IMOBI/SHERWIN"]
 
 
+@st.fragment
 def _render_editor(
     uf: str,
     qtd_key: str,
@@ -63,10 +72,23 @@ def _render_editor(
     if filtered.empty or rich.empty:
         return
 
-    qtd_map   = st.session_state[qtd_key]
-    sku_array = filtered["COD_SKU"].values
+    qtd_map        = st.session_state[qtd_key]
+    _sku_array_all = filtered["COD_SKU"].values
 
-    _tem_similar_na_lista = any(sku in _sim_lookup for sku in sku_array)
+    # ── Paginação ──────────────────────────────────────────────────────────────
+    _PAGE_SIZE = 200
+    _n_total   = len(_sku_array_all)
+    _n_pages   = max(1, (_n_total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    _page_key  = f"cat_pg_{uf}_{st.session_state[flt_cnt_key]}"
+    if _page_key not in st.session_state:
+        st.session_state[_page_key] = 0
+    _cur_page = min(st.session_state[_page_key], _n_pages - 1)
+    _start    = _cur_page * _PAGE_SIZE
+    _end      = min(_start + _PAGE_SIZE, _n_total)
+    sku_array = _sku_array_all[_start:_end]
+    filtered  = filtered.iloc[_start:_end]
+
+    _tem_similar_na_lista = any(sku in _sim_lookup for sku in _sku_array_all)
     if _tem_similar_na_lista:
         st.caption("💡 Linhas com 🔄 possuem similar — marque ☑ para ver o similar (abre janela, funciona em tela cheia).")
 
@@ -115,7 +137,7 @@ def _render_editor(
         if not citel_via_sb:
             st.warning("⚠️ BD offline — COD CITEL, Grupo e Marca indisponíveis.")
 
-    _editor_key = f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[flt_cnt_key]}"
+    _editor_key = f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[flt_cnt_key]}_{_cur_page}"
 
     edited = st.data_editor(
         _df_edit,
@@ -126,6 +148,7 @@ def _render_editor(
     )
 
     st.session_state[f"_prev_sku_{uf}"] = list(map(str, sku_array))
+    st.session_state[f"_cur_pg_{uf}"]    = _cur_page
 
     # ── Diálogo de similar ────────────────────────────────────────────────────
     _marcadas = edited[edited["ver_sim"] == True]
@@ -175,13 +198,45 @@ def _render_editor(
 
     # ── Rodapé: contagem ──────────────────────────────────────────────────────
     _sel_skus_frag = {sku: q for sku, q in st.session_state[qtd_key].items() if q > 0}
-    n_total   = len(rich)
-    n_display = len(_df_edit)
-    filtrado  = f" (filtrado de {n_total})" if n_display < n_total else ""
+    n_total_all = len(rich)
+    n_display   = len(_df_edit)
+    _filtrado   = f" (filtrado de {n_total_all})" if _n_total < n_total_all else ""
+    _pag_info   = f"  ·  pág. {_cur_page + 1}/{_n_pages}" if _n_pages > 1 else ""
     st.caption(
-        f"**{n_display}** itens{filtrado} — UF: **{uf}**"
+        f"**{n_display}** itens{_pag_info}  ·  {_n_total} nesta busca{_filtrado} — UF: **{uf}**"
         + (f" | **{len(_sel_skus_frag)}** selecionado(s)" if _sel_skus_frag else "")
     )
+
+    # ── Navegação de páginas ──────────────────────────────────────────────────
+    if _n_pages > 1:
+        def _salvar_qtds_pagina():
+            for _pi, _ps in enumerate(map(str, sku_array)):
+                try:
+                    _pv = edited.iloc[_pi]["QTD"]
+                    _pv = max(0, int(float(str(_pv)))) if _pv is not None else 0
+                except (ValueError, TypeError):
+                    _pv = 0
+                if _pv > 0:
+                    st.session_state[qtd_key][_ps] = _pv
+                else:
+                    st.session_state[qtd_key].pop(_ps, None)
+        _pc1, _pc2, _pc3 = st.columns([1, 4, 1])
+        with _pc1:
+            if st.button("◀ Anterior", disabled=_cur_page == 0,
+                         key=f"cat_prev_{uf}_{st.session_state[flt_cnt_key]}",
+                         use_container_width=True):
+                _salvar_qtds_pagina()
+                st.session_state[_page_key] = _cur_page - 1
+                st.rerun(scope="app")
+        with _pc2:
+            st.caption(f"Página **{_cur_page + 1}** de **{_n_pages}**")
+        with _pc3:
+            if st.button("Próxima ▶", disabled=_cur_page >= _n_pages - 1,
+                         key=f"cat_next_{uf}_{st.session_state[flt_cnt_key]}",
+                         use_container_width=True):
+                _salvar_qtds_pagina()
+                st.session_state[_page_key] = _cur_page + 1
+                st.rerun(scope="app")
 
 
 @st.dialog("🔄 Similar disponível", width="large")
@@ -361,7 +416,8 @@ def render(
     if st.session_state[_flt_sig_key] != _flt_sig_cur:
         if st.session_state[_flt_sig_key] is not None:   # não é primeiro render
             # Salva QTDs do editor atual ANTES de resetar (captura edições não aplicadas)
-            _old_editor_key = f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[_flt_cnt_key]}"
+            _old_cur_page   = st.session_state.get(f"_cur_pg_{uf}", 0)
+            _old_editor_key = f"editor_{uf}_{st.session_state[zerar_key]}_{st.session_state[aplc_key]}_{st.session_state[dlg_key]}_{st.session_state[_flt_cnt_key]}_{_old_cur_page}"
             _prev_sku = st.session_state.get(f"_prev_sku_{uf}", [])
             for _ri_str, _rd in st.session_state.get(_old_editor_key, {}).get("edited_rows", {}).items():
                 try:
@@ -510,11 +566,25 @@ def render(
     col_env, col_exp_suv, col_exp_sw, col_exp_all = st.columns(4)
 
     # Botão Enviar Pedido
+    _fp_key = f"_ultimo_pedido_fp_{uf}"  # fingerprint do último carrinho enviado
     with col_env:
         if st.button(label_btn, type="primary", use_container_width=True):
             if not itens_pedido:
                 st.error("❌ Adicione ao menos um item antes de enviar.")
                 st.stop()
+
+            # Guard contra double-submit: bloqueia se o mesmo carrinho já foi enviado
+            # nesta sessão (protege contra run interrompido antes de qtd_key ser limpo).
+            _fp = _cart_fp(itens_pedido)
+            if st.session_state.get(_fp_key) == _fp:
+                st.warning("⚠️ Este pedido já foi enviado. Aguarde ou adicione novos itens.")
+                st.stop()
+
+            # Registra fingerprint ANTES da chamada de rede — assim, mesmo que o run
+            # seja interrompido após salvar_pedido() mas antes de qtd_key = {},
+            # o próximo run com o mesmo carrinho será bloqueado.
+            st.session_state[_fp_key] = _fp
+
             pedido_data = {
                 "usuario":     u.get("nome", u.get("usuario", "")),
                 "loja":        u.get("loja", ""),
@@ -539,11 +609,14 @@ def render(
                     else:
                         st.warning(f"⚠️ Pedido salvo, mas falha no e-mail: {msg_mail}")
 
-                # Limpa quantidades
+                # Limpa quantidades e fingerprint
                 st.session_state[qtd_key]   = {}
                 st.session_state[zerar_key] += 1
+                st.session_state.pop(_fp_key, None)
                 st.rerun()
             else:
+                # Erro: remove fingerprint para permitir nova tentativa
+                st.session_state.pop(_fp_key, None)
                 st.error(f"Erro ao salvar pedido: {msg}")
 
     # ── Similares dos itens selecionados ──────────────────────────────────────

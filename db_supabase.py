@@ -91,11 +91,11 @@ CREATE TABLE IF NOT EXISTS citel_itens (
 
 
 # ── Cliente Supabase (singleton via cache_resource) ──────────────────────────
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False, ttl=600)
 def get_supabase():
     """
     Retorna cliente Supabase autenticado.
-    Cached permanentemente — reconecta apenas em restart do servidor.
+    Cache de 10 min — evita cliente HTTP stale após quedas de rede.
     """
     url = os.environ.get("SUPABASE_URL", "")
     key = os.environ.get("SUPABASE_KEY", "")
@@ -108,16 +108,53 @@ def get_supabase():
         return None
 
 
+def reset_supabase() -> None:
+    """Invalida o cliente cacheado para forçar reconexão."""
+    try:
+        get_supabase.clear()
+    except Exception:
+        pass
+
+
+def supabase_credenciais_ok() -> tuple[bool, str]:
+    """Verifica se URL e KEY estão disponíveis no ambiente."""
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = os.environ.get("SUPABASE_KEY", "").strip()
+    if not url and not key:
+        return False, "SUPABASE_URL e SUPABASE_KEY ausentes no servidor"
+    if not url:
+        return False, "SUPABASE_URL ausente no servidor"
+    if not key:
+        return False, "SUPABASE_KEY ausente no servidor"
+    return True, ""
+
+
 def supabase_ok() -> bool:
     """Verifica se o Supabase está configurado e acessível."""
-    sb = get_supabase()
-    if not sb:
+    ok_cfg, _ = supabase_credenciais_ok()
+    if not ok_cfg:
         return False
-    try:
-        sb.table("configuracoes").select("chave").limit(1).execute()
-        return True
-    except Exception:
-        return False
+    for _ in range(2):
+        sb = get_supabase()
+        if not sb:
+            reset_supabase()
+            continue
+        try:
+            sb.table("configuracoes").select("chave").limit(1).execute()
+            return True
+        except Exception:
+            reset_supabase()
+    return False
+
+
+def supabase_status() -> tuple[bool, str]:
+    """Retorna (ok, mensagem) para exibir diagnóstico na UI."""
+    ok_cfg, msg_cfg = supabase_credenciais_ok()
+    if not ok_cfg:
+        return False, msg_cfg
+    if supabase_ok():
+        return True, "Conectado"
+    return False, "Credenciais presentes, mas conexão falhou (rede ou Supabase)"
 
 
 # ── Sessões autenticadas ──────────────────────────────────────────────────────

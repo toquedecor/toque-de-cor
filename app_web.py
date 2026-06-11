@@ -17,15 +17,33 @@ try:
 except ImportError:
     pass
 
-# Bridge: injeta st.secrets → os.environ (usado no Streamlit Community Cloud)
+# Bridge: injeta secrets → os.environ (HF Docker, Streamlit Cloud, local)
 # Precisa estar ANTES de qualquer import que leia os.environ
 import streamlit as st  # noqa: E402 — necessário aqui para st.secrets
-try:
-    for _sk, _sv in st.secrets.items():
-        if isinstance(_sv, str):
-            os.environ.setdefault(_sk, _sv)
-except Exception:
-    pass
+
+
+def _bootstrap_env() -> None:
+    """Carrega variáveis do HF Docker (env), st.secrets e .env local."""
+    _keys = (
+        "SUPABASE_URL", "SUPABASE_KEY", "SESSION_HOURS",
+        "MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_PORT", "MYSQL_DATABASE",
+        "GITHUB_DISPATCH_TOKEN",
+    )
+    # HF Docker Spaces injetam Repository Secrets como variáveis de ambiente
+    for _k in _keys:
+        _v = os.environ.get(_k, "").strip()
+        if _v:
+            os.environ[_k] = _v
+    # Streamlit Community Cloud / secrets.toml
+    try:
+        for _sk, _sv in st.secrets.items():
+            if isinstance(_sv, str) and _sv.strip():
+                os.environ.setdefault(_sk, _sv.strip())
+    except Exception:
+        pass
+
+
+_bootstrap_env()
 
 import numpy as np
 import pandas as pd
@@ -44,7 +62,7 @@ from db import (                          # db.py original — MySQL/CITEL
     query_items, test_connection,
     clear_disk_cache, get_cached_data,
 )
-from db_supabase import supabase_ok, get_config, catalogo_disponivel, get_catalogo_uf, get_similares, set_similares
+from db_supabase import supabase_ok, supabase_status, get_config, catalogo_disponivel, get_catalogo_uf, get_similares, set_similares
 from app_pages import admin, catalog, history
 
 # ── Constantes ────────────────────────────────────────────────────────────────
@@ -314,38 +332,53 @@ with st.sidebar:
     pagina = st.radio("Navegação", paginas_disp, label_visibility="collapsed")
     st.divider()
 
-    # Status BD: carrega uma vez por sessão; só reatualiza ao clicar em Recarregar BD
-    if "sidebar_db_ok" not in st.session_state:
+    # Status BD: revalida a cada 2 min (evita indicador verde com conexão já caída)
+    import time as _time_sb
+    _sb_check_ttl = 120
+    _sb_check_due = (
+        "sidebar_db_ok" not in st.session_state
+        or _time_sb.time() - st.session_state.get("sidebar_checked_at", 0) > _sb_check_ttl
+    )
+    if _sb_check_due:
         db_ok, db_msg = check_db()
-        sb_ok = supabase_ok()
+        sb_ok, sb_msg = supabase_status()
         ultima = get_config("ultima_importacao", "")
-        # Verifica se citel_itens do Supabase tem dados (fallback)
         try:
             from db_supabase import get_citel_itens
             _df_c = get_citel_itens()
             citel_via_sb = _df_c is not None and not _df_c.empty
         except Exception:
             citel_via_sb = False
-        st.session_state.sidebar_db_ok      = db_ok
-        st.session_state.sidebar_sb_ok      = sb_ok
-        st.session_state.sidebar_ultima     = ultima
+        st.session_state.sidebar_db_ok        = db_ok
+        st.session_state.sidebar_sb_ok        = sb_ok
+        st.session_state.sidebar_sb_msg       = sb_msg
+        st.session_state.sidebar_ultima       = ultima
         st.session_state.sidebar_citel_via_sb = citel_via_sb
+        st.session_state.sidebar_checked_at   = _time_sb.time()
     else:
         db_ok        = st.session_state.sidebar_db_ok
         sb_ok        = st.session_state.sidebar_sb_ok
+        sb_msg       = st.session_state.get("sidebar_sb_msg", "")
         ultima       = st.session_state.sidebar_ultima
         citel_via_sb = st.session_state.get("sidebar_citel_via_sb", False)
 
     st.caption("**Status dos Bancos**")
     st.caption(f"{'🟢' if db_ok else '🔴'} MySQL CITEL")
     st.caption(f"{'🟢' if sb_ok else '🔴'} Supabase")
+    if not sb_ok and sb_msg:
+        st.caption(f"⚠️ {sb_msg}")
 
     _lbl_reload = "🔄 Recarregar BD" if db_ok else "🔁 Tentar reconectar BD"
     if st.button(_lbl_reload, use_container_width=True):
+        from db_supabase import reset_supabase
+        reset_supabase()
         _clear_all_caches()
         check_db.clear()
         st.session_state.pop("caches_warmed", None)
         st.session_state.pop("sidebar_db_ok", None)
+        st.session_state.pop("sidebar_sb_ok", None)
+        st.session_state.pop("sidebar_sb_msg", None)
+        st.session_state.pop("sidebar_checked_at", None)
         st.session_state.pop("sidebar_citel_via_sb", None)
         st.rerun()
 
