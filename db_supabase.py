@@ -353,29 +353,78 @@ def salvar_pedido(pedido: dict, itens: list[dict]) -> tuple[bool, str, int, int]
         return False, str(e), -1, 0
 
 
+_COLS_PEDIDOS = (
+    "id, numero, usuario, loja, uf, desconto_pct, total_geral, status, criado_em, enviado_em"
+)
+
+
+def _identidades_vendedor(sb, usuario_login: str, usuario_nome: str) -> list[str]:
+    """Monta lista de identidades para casar pedidos.usuario (nome ou login)."""
+    ids: set[str] = set()
+    for val in (usuario_nome, usuario_login):
+        v = (val or "").strip()
+        if v:
+            ids.add(v)
+    if usuario_login:
+        try:
+            r = (
+                sb.table("usuarios")
+                .select("nome")
+                .eq("usuario", usuario_login.strip())
+                .limit(1)
+                .execute()
+            )
+            if r.data:
+                nome_db = (r.data[0].get("nome") or "").strip()
+                if nome_db:
+                    ids.add(nome_db)
+        except Exception:
+            pass
+    return sorted(ids)
+
+
+def _fetch_pedidos(sb, perfil: str, usuario_login: str, usuario_nome: str, loja: str) -> list[dict]:
+    q = (
+        sb.table("pedidos")
+        .select(_COLS_PEDIDOS)
+        .order("numero", desc=True)
+        .limit(1000)
+    )
+    if perfil == "vendedor":
+        ids = _identidades_vendedor(sb, usuario_login, usuario_nome)
+        if ids:
+            q = q.in_("usuario", ids)
+        else:
+            return []
+    elif perfil == "supervisor" and loja:
+        q = q.eq("loja", loja.strip())
+    r = q.execute()
+    return r.data or []
+
+
 @st.cache_data(ttl=30)
-def listar_pedidos(usuario: str = "", loja: str = "", perfil: str = "") -> list[dict]:
+def listar_pedidos(
+    usuario_login: str = "",
+    usuario_nome: str = "",
+    loja: str = "",
+    perfil: str = "",
+) -> list[dict]:
     """
-    Lista pedidos. Admin/Supervisor veem todos; Vendedor vê apenas os próprios.
+    Lista pedidos. Admin vê todos; Supervisor vê a loja; Vendedor vê os próprios.
     Cache 30s — evita HTTP a cada navegação entre menus.
     """
     sb = get_supabase()
     if not sb:
         return []
-    try:
-        q = sb.table("pedidos").select(
-            "id, numero, usuario, loja, uf, desconto_pct, total_geral, status, criado_em, enviado_em"
-        ).order("numero", desc=True)
-
-        if perfil == "vendedor" and usuario:
-            q = q.eq("usuario", usuario)
-        elif loja and perfil == "supervisor":
-            q = q.eq("loja", loja)
-
-        r = q.execute()
-        return r.data or []
-    except Exception:
-        return []
+    for _ in range(2):
+        try:
+            return _fetch_pedidos(sb, perfil, usuario_login, usuario_nome, loja)
+        except Exception:
+            reset_supabase()
+            sb = get_supabase()
+            if not sb:
+                return []
+    return []
 
 
 def buscar_pedido_completo(pedido_id: int) -> dict | None:

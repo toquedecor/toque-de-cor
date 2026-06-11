@@ -69,17 +69,24 @@ STATUS_LABEL = {
 
 
 def render():
-    u       = auth.usuario_atual()
-    perfil  = u.get("perfil", "vendedor")
-    usuario = u.get("nome", u.get("usuario", ""))
-    loja    = u.get("loja", "")
+    u             = auth.usuario_atual()
+    perfil        = u.get("perfil", "vendedor")
+    usuario_login = (u.get("usuario") or "").strip()
+    usuario_nome  = (u.get("nome") or usuario_login).strip()
+    loja          = (u.get("loja") or "").strip()
 
     ver_preco   = auth.tem_permissao("ver_precos")
     pode_aprov  = auth.tem_permissao("aprovar_pedidos")
-    from db_supabase import get_all_configs as _all_cfg
+    from db_supabase import get_all_configs as _all_cfg, supabase_status, listar_pedidos as _lp
     exige_aprov = _all_cfg().get("pedido_aprovacao", "false") == "true"
 
     st.markdown("## 📦 Histórico de Pedidos")
+
+    _hc1, _hc2 = st.columns([4, 1])
+    with _hc2:
+        if st.button("🔄 Atualizar", use_container_width=True, key="hist_refresh"):
+            _lp.clear()
+            st.rerun()
 
     # ── Detalhe de pedido selecionado ────────────────────────────────────────
     if "hist_pedido_id" in st.session_state:
@@ -118,10 +125,11 @@ def render():
 
         # ── Modo edição / visualização ────────────────────────────────────────
         _STATES_ED  = ["RN", "BA", "PE", "AL", "PB"]
+        _dono_pedido = ped.get("usuario", "") in {usuario_nome, usuario_login}
         _pode_editar = (
             perfil == "admin"
             or perfil == "supervisor"
-            or (perfil == "vendedor" and ped.get("usuario", "") == usuario)
+            or (perfil == "vendedor" and _dono_pedido)
         ) and ped.get("status", "") in ("pendente", "enviado")
         _edit_mode = st.session_state.get(f"edit_ped_{pid}", False)
 
@@ -366,10 +374,26 @@ def render():
         return  # não renderiza lista enquanto detalhe está aberto
 
     # ── Lista de pedidos ─────────────────────────────────────────────────────
-    pedidos = listar_pedidos(usuario=usuario, loja=loja, perfil=perfil)
+    pedidos = listar_pedidos(
+        usuario_login=usuario_login,
+        usuario_nome=usuario_nome,
+        loja=loja,
+        perfil=perfil,
+    )
 
     if not pedidos:
-        st.info("Nenhum pedido encontrado.")
+        _sb_ok, _sb_msg = supabase_status()
+        if not _sb_ok:
+            st.warning(f"Não foi possível carregar pedidos — {_sb_msg}")
+        elif perfil == "vendedor":
+            st.info(
+                f"Nenhum pedido encontrado para **{usuario_nome}**. "
+                "Pedidos antigos podem estar vinculados a outro nome de operador."
+            )
+        elif perfil == "supervisor" and loja:
+            st.info(f"Nenhum pedido encontrado para a loja **{loja}**.")
+        else:
+            st.info("Nenhum pedido encontrado.")
         return
 
     # Filtros da lista
